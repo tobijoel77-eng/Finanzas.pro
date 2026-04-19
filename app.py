@@ -1,6 +1,6 @@
 import streamlit as st
 import psycopg2
-from psycopg2 import extras
+from psycopg2 import extras, InterfaceError, OperationalError
 import bcrypt
 import pandas as pd
 import plotly.express as px
@@ -8,31 +8,57 @@ import plotly.graph_objects as go
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 from decimal import Decimal, ROUND_HALF_UP, getcontext
+import time
 
 # Precisión alta para cálculos financieros (evita errores por float binario)
 getcontext().prec = 28
 
 # =========================================================
-# 1. GESTIÓN DE CONEXIÓN
+# 1. GESTIÓN DE CONEXIÓN — ROBUSTA PARA PRODUCCIÓN
 # =========================================================
+
+def _params_conexion():
+    return dict(
+        host=st.secrets["postgres"]["host"],
+        database=st.secrets["postgres"]["database"],
+        user=st.secrets["postgres"]["user"],
+        password=st.secrets["postgres"]["password"],
+        port=st.secrets["postgres"]["port"],
+        connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+    )
+
+@st.cache_resource(ttl=3600)
+def _pool():
+    """Conexión cacheada a nivel de servidor. Se renueva cada 1 hora."""
+    return psycopg2.connect(**_params_conexion())
+
+def _ping(conn) -> bool:
+    """Devuelve True si la conexión responde."""
+    try:
+        if conn.closed != 0:
+            return False
+        conn.cursor().execute("SELECT 1")
+        return True
+    except (InterfaceError, OperationalError):
+        return False
+
 def get_connection():
-    """Crea o recupera la conexión, asegurándose de que esté activa."""
-    if "db_conn" not in st.session_state or st.session_state.db_conn.closed != 0:
-        try:
-            st.session_state.db_conn = psycopg2.connect(
-                host=st.secrets["postgres"]["host"],
-                database=st.secrets["postgres"]["database"],
-                user=st.secrets["postgres"]["user"],
-                password=st.secrets["postgres"]["password"],
-                port=st.secrets["postgres"]["port"]
-            )
-        except Exception as e:
-            st.error(f"Error crítico de conexión: {e}")
+    """Devuelve una conexión activa. Reconecta automáticamente si falla."""
+    conn = _pool()
+    if not _ping(conn):
+        _pool.clear()          # borra la cache para forzar nueva conexión
+        conn = _pool()
+        if not _ping(conn):
+            st.error("No se pudo conectar a la base de datos. Intentá recargar la página.")
             return None
-    return st.session_state.db_conn
+    return conn
 
 def get_cursor():
-    """Obtiene un cursor fresco de una conexión activa."""
+    """Cursor fresco sobre una conexión garantizada activa."""
     conn = get_connection()
     if conn:
         return conn, conn.cursor(cursor_factory=extras.DictCursor)
@@ -174,10 +200,37 @@ def calcular_prestamo(capital, tasa_mensual_pct, plazo_meses, sistema="Francés"
 # =========================================================
 # 3. INICIALIZACIÓN DE TABLAS (idempotente)
 # =========================================================
-def init_db():
-    conn, cur = get_cursor()
-    if not cur:
-        return
+def init_db(retries: int = 3, delay: float = 2.0):
+    """Inicializa tablas. Reintenta hasta `retries` veces ante fallos de conexión."""
+    for attempt in range(1, retries + 1):
+        conn, cur = get_cursor()
+        if not cur:
+            if attempt < retries:
+                time.sleep(delay)
+                _pool.clear()
+                continue
+            st.error("No se pudo inicializar la base de datos tras varios intentos.")
+            return
+        try:
+            _init_tablas(conn, cur)
+            return
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            if attempt < retries:
+                time.sleep(delay)
+                _pool.clear()
+            else:
+                st.error(f"Error al inicializar tablas tras {retries} intentos: {e}")
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+
+def _init_tablas(conn, cur):
     try:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
@@ -262,9 +315,7 @@ def init_db():
         conn.commit()
     except Exception as e:
         conn.rollback()
-        st.error(f"Error al inicializar tablas: {e}")
-    finally:
-        cur.close()
+        raise  # propaga al retry en init_db
 
 # =========================================================
 # 4. CONFIGURACIÓN + CSS PREMIUM (FinTech World Class)
