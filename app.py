@@ -210,7 +210,7 @@ def init_db(retries: int = 3, delay: float = 2.0):
         if not cur:
             if attempt < retries:
                 time.sleep(delay)
-                _pool.clear()
+                _get_engine().dispose()
                 continue
             st.error("No se pudo inicializar la base de datos tras varios intentos.")
             return
@@ -224,7 +224,7 @@ def init_db(retries: int = 3, delay: float = 2.0):
                 pass
             if attempt < retries:
                 time.sleep(delay)
-                _pool.clear()
+                _get_engine().dispose()
             else:
                 st.error(f"Error al inicializar tablas tras {retries} intentos: {e}")
         finally:
@@ -600,33 +600,36 @@ _LOADING_OVERLAY = """
 <style>@keyframes _aspin{to{transform:rotate(360deg)}}</style>
 """
 
-# ---- Inicializar estado ----
+# ---- Session state initialization ----
 if "logged_in"   not in st.session_state: st.session_state.logged_in   = False
 if "_auth_cycle" not in st.session_state: st.session_state._auth_cycle = 0
 
-_MAX_CYCLES = 2   # máximo 2 reruns esperando al CookieManager; luego → login directo
+_MAX_CYCLES = 2
 
-# ---- Auto-login sin parpadeo ----
-# Diagrama de estados:
-#   no-token + cycle<MAX → overlay + rerun   (esperar a CookieManager)
-#   no-token + cycle>=MAX → login            (sin sesión)
-#   token-inválido        → borrar cookie + ir a login  (corta el loop)
-#   token-válido          → session_state + rerun → dashboard
+# =========================================================
+# 5. GATEKEEPER - punto de entrada unico, bloquea dashboard
+# =========================================================
+# Flujo garantizado:
+#   Ciclo 0 (F5): CookieManager aun cargando -> overlay + sleep(0.5) + rerun
+#   Ciclo 1: cookie disponible -> validar DB -> auto-login o borrar + login
+#   Si token invalido: borrar cookie, mostrar login, st.stop()
+#   Si sin token tras MAX_CYCLES: mostrar login, st.stop()
+#   st.stop() impide que el dashboard renderice SIN sesion confirmada.
+# =========================================================
 if not st.session_state.logged_in:
     _token = _cookie_mgr.get("session_pro_py")
     print(f"[AUTH] cycle={st.session_state._auth_cycle}  token={'YES' if _token else 'NO'}")
 
     if _token:
-        # Cookie presente — validar contra BD
-        print("[AUTH] Validando token contra DB...")
+        # Cookie presente - validar contra DB
         try:
             _user = _validar_token(_token)
-        except Exception as _ve:
-            print(f"[AUTH] Error en validacion: {_ve}")
+        except Exception as _e:
+            print(f"[AUTH] Error validando token: {_e}")
             _user = None
 
         if _user:
-            print(f"[AUTH] Sesion valida → auto-login como '{_user['username']}'")
+            print(f"[AUTH] Auto-login como '{_user['username']}'")
             st.session_state.logged_in         = True
             st.session_state.user_id           = _user["id"]
             st.session_state.username          = _user["username"]
@@ -635,954 +638,945 @@ if not st.session_state.logged_in:
             st.session_state._auth_cycle       = 0
             st.rerun()
         else:
-            # Token expirado/inválido: ELIMINAR la cookie para cortar
-            # cualquier loop futuro (sin esto, cada rerun vuelve a este punto).
-            print("[AUTH] Token invalido/expirado — eliminando cookie")
-            st.session_state._auth_cycle = _MAX_CYCLES  # saltar loading en próx. rerun
+            # Token expirado/invalido: borrar cookie y caer al login
+            print("[AUTH] Token invalido - eliminando cookie")
+            st.session_state._auth_cycle = _MAX_CYCLES   # evita overlay en proximo rerun
             try:
-                _cookie_mgr.delete("session_pro_py")    # dispara rerun interno
+                _cookie_mgr.delete("session_pro_py")
             except Exception:
                 pass
-            # Si delete() no disparó rerun, caemos al login normalmente.
 
     elif st.session_state._auth_cycle < _MAX_CYCLES:
-        # No hay token aún — CookieManager todavía cargando. Esperar.
-        print(f"[AUTH] Sin token todavia, ciclo {st.session_state._auth_cycle + 1}/{_MAX_CYCLES}")
-        st.markdown(_LOADING_OVERLAY, unsafe_allow_html=True)
+        # Sin token aun - CookieManager todavia cargando. Esperar un ciclo.
+        print(f"[AUTH] Esperando cookie, ciclo {st.session_state._auth_cycle + 1}/{_MAX_CYCLES}")
+        _slot_ov = st.empty()
+        _slot_ov.markdown(_LOADING_OVERLAY, unsafe_allow_html=True)
         st.session_state._auth_cycle += 1
+        time.sleep(0.5)
         st.rerun()
 
-    else:
-        # Ciclos agotados: definitivamente no hay sesión → mostrar login.
-        print("[AUTH] Sin sesion activa — mostrando login")
-        st.session_state._auth_cycle = 0
+    # Sin sesion confirmada -> mostrar login y detener ejecucion
+    print("[AUTH] Sin sesion activa - mostrando login")
+    st.session_state._auth_cycle = 0
 
-# =========================================================
-# 5. PANTALLA DE ACCESO
-# =========================================================
-if not st.session_state.logged_in:
-    st.markdown("""
-    <div class="login-wrap">
-      <div class="login-card">
-        <h1>🚀 Finanzas Pro PY</h1>
-        <p>Acceso restringido &middot; Solo usuarios autorizados</p>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    _login_slot = st.empty()
+    with _login_slot.container():
+        st.markdown("""
+        <div class="login-wrap">
+          <div class="login-card">
+            <h1>🚀 Finanzas Pro PY</h1>
+            <p>Acceso restringido &middot; Solo usuarios autorizados</p>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    _, col_c, _ = st.columns([1, 2, 1])
-    with col_c:
-        u = st.text_input("Usuario", key="l_u")
-        p = st.text_input("Contraseña", type="password", key="l_p")
-        if st.button("🔐 Entrar", use_container_width=True):
-            conn, cur = get_cursor()
-            try:
-                cur.execute("SELECT * FROM usuarios WHERE username = %s", (u,))
-                user = cur.fetchone()
-                if user and bcrypt.checkpw(p.encode(), user['password'].encode()):
-                    st.session_state.logged_in  = True
-                    st.session_state.user_id    = user['id']
-                    st.session_state.username   = user['username']
-                    st.session_state.role       = user['role'] if 'role' in user.keys() else 'user'
-                    _tok = _crear_token(user['id'])
-                    st.session_state["_session_token"] = _tok
-                    _cookie_mgr.set(
-                        "session_pro_py", _tok,
-                        expires_at=datetime.now() + timedelta(days=7)
-                    )
-                    st.rerun()
-                else:
-                    st.error("❌ Credenciales incorrectas")
-            finally:
-                cur.close()
-        st.caption("Sin cuenta? Pedile al administrador que te registre.")
-
-# =========================================================
-# 6. DASHBOARD
-# =========================================================
-else:
-    # Asegurarse de tener role (compatibilidad sesiones antiguas)
-    if "role" not in st.session_state:
-        conn_r, cur_r = get_cursor()
-        try:
-            cur_r.execute("SELECT role FROM usuarios WHERE id = %s", (st.session_state.user_id,))
-            row_r = cur_r.fetchone()
-            st.session_state.role = (row_r['role'] if row_r else 'user') or 'user'
-        finally:
-            cur_r.close()
-
-    is_admin = st.session_state.get("role", "user") == "admin"
-
-    st.sidebar.title(f"👋 {st.session_state.username}")
-    rol_badge = "🛡️ Administrador" if is_admin else "👤 Usuario"
-    st.sidebar.markdown(f"**{rol_badge}**")
-    st.sidebar.divider()
-    if st.sidebar.button("Cerrar Sesión"):
-        _t = st.session_state.get("_session_token") or _cookie_mgr.get("session_pro_py")
-        if _t:
-            _revocar_token(_t)
-        _cookie_mgr.delete("session_pro_py")
-        for k in ["logged_in", "user_id", "username", "role", "_session_token"]:
-            st.session_state.pop(k, None)
-        st.rerun()
-
-    # Pestañas: el admin ve una adicional "👥 Usuarios"
-    tabs_labels = ["💰 Movimientos", "🤝 Préstamos", "📈 Inversiones", "🎯 Ahorros"]
-    if is_admin:
-        tabs_labels.append("👥 Usuarios")
-    menu = st.tabs(tabs_labels)
-
-    # -----------------------------------------------------
-    # PESTAÑA 1: MOVIMIENTOS (DASHBOARD + PLOTLY)
-    # -----------------------------------------------------
-    with menu[0]:
-        st.header("💰 Gestión de Caja")
-
-        # -------- DASHBOARD KPIs --------
-        conn, cur = get_cursor()
-        try:
-            cur.execute("""
-                SELECT
-                    COALESCE(SUM(CASE WHEN tipo='Ingreso' THEN monto ELSE 0 END),0) AS ingresos,
-                    COALESCE(SUM(CASE WHEN tipo='Egreso'  THEN monto ELSE 0 END),0) AS egresos
-                FROM movimientos WHERE user_id = %s
-            """, (st.session_state.user_id,))
-            tot = cur.fetchone()
-            ingresos_tot = Decimal(str(tot['ingresos'] or 0))
-            egresos_tot  = Decimal(str(tot['egresos']  or 0))
-
-            cur.execute("SELECT COALESCE(SUM(monto), 0) AS total FROM gastos")
-            gastos_tot = Decimal(str((cur.fetchone() or {}).get('total', 0) or 0))
-
-            saldo_neto = ingresos_tot - egresos_tot - gastos_tot
-
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("💵 Ingresos Totales",  fmt_gs(ingresos_tot))
-            k2.metric("💸 Egresos Totales",   fmt_gs(egresos_tot))
-            k3.metric("🏢 Gastos Adm.",        fmt_gs(gastos_tot))
-            k4.metric(
-                "📊 Balance Neto",
-                fmt_gs(saldo_neto),
-                delta=f"{'▲' if saldo_neto >= 0 else '▼'} {fmt_gs(abs(saldo_neto))}",
-                delta_color="normal" if saldo_neto >= 0 else "inverse",
-            )
-
-            st.divider()
-
-            # -------- FORMULARIO NUEVO MOVIMIENTO --------
-            CATEGORIAS_EGRESO = ["Alimentación", "Transporte", "Vivienda", "Servicios",
-                                 "Salud", "Educación", "Ocio", "Ropa", "Otros"]
-            CATEGORIAS_INGRESO = ["Sueldo", "Freelance", "Ventas", "Intereses", "Otros"]
-
-            with st.expander("➕ Registrar Nuevo Movimiento", expanded=False):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    tipo = st.selectbox("Tipo", ["Ingreso", "Egreso"])
-                    cats = CATEGORIAS_INGRESO if tipo == "Ingreso" else CATEGORIAS_EGRESO
-                    categoria = st.selectbox("Categoría", cats)
-                with col2:
-                    monto = st.number_input("Monto (Gs.)", min_value=0, step=5000)
-                    fecha = st.date_input("Fecha", datetime.now())
-                with col3:
-                    desc = st.text_input("Descripción")
-                    st.write(""); st.write("")  # espaciado
-                    if st.button("💾 Guardar Movimiento", use_container_width=True):
-                        if monto <= 0:
-                            st.warning("El monto debe ser mayor a 0.")
+        _, col_c, _ = st.columns([1, 2, 1])
+        with col_c:
+            u = st.text_input("Usuario", key="l_u")
+            p = st.text_input("Contraseña", type="password", key="l_p")
+            if st.button("🔐 Entrar", use_container_width=True):
+                conn_l, cur_l = get_cursor()
+                if cur_l:
+                    try:
+                        cur_l.execute("SELECT * FROM usuarios WHERE username = %s", (u,))
+                        user = cur_l.fetchone()
+                        if user and bcrypt.checkpw(p.encode(), user["password"].encode()):
+                            st.session_state.logged_in  = True
+                            st.session_state.user_id    = user["id"]
+                            st.session_state.username   = user["username"]
+                            st.session_state.role       = (user["role"] if "role" in user.keys() else "user") or "user"
+                            _tok = _crear_token(user["id"])
+                            st.session_state["_session_token"] = _tok
+                            _cookie_mgr.set(
+                                "session_pro_py", _tok,
+                                expires_at=datetime.now() + timedelta(days=7)
+                            )
+                            st.rerun()
                         else:
-                            try:
-                                cur.execute(
-                                    "INSERT INTO movimientos (user_id, tipo, monto, descripcion, fecha, categoria) VALUES (%s,%s,%s,%s,%s,%s)",
-                                    (st.session_state.user_id, tipo, monto, desc, fecha, categoria)
-                                )
-                                conn.commit()
-                                st.success("¡Movimiento registrado!")
-                                st.rerun()
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"Error: {e}")
-
-            # -------- GRÁFICO TORTA EGRESOS --------
-            cur.execute("""
-                SELECT COALESCE(categoria,'Otros') AS categoria, SUM(monto) AS total
-                FROM movimientos
-                WHERE user_id = %s AND tipo = 'Egreso'
-                GROUP BY categoria ORDER BY total DESC
-            """, (st.session_state.user_id,))
-            egresos_cat = cur.fetchall()
-
-            col_g, col_t = st.columns([3, 2])
-
-            with col_g:
-                st.subheader("🍩 Egresos por Categoría")
-                if egresos_cat:
-                    df_cat = pd.DataFrame([dict(r) for r in egresos_cat])
-                    df_cat["total"] = df_cat["total"].astype(float)
-                    fig = px.pie(
-                        df_cat, names="categoria", values="total",
-                        hole=0.55,
-                        color_discrete_sequence=px.colors.sequential.Blues_r
-                    )
-                    fig.update_traces(
-                        textposition="outside",
-                        textinfo="label+percent",
-                        hovertemplate="<b>%{label}</b><br>%{value:,.0f} Gs.<extra></extra>"
-                    )
-                    fig.update_layout(
-                        showlegend=False,
-                        margin=dict(l=10, r=10, t=10, b=10),
-                        height=380,
-                        paper_bgcolor="rgba(0,0,0,0)",
-                        plot_bgcolor="rgba(0,0,0,0)",
-                        font=dict(family="Inter", size=13, color="#FFFFFF"),
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                            st.error("Credenciales incorrectas")
+                    finally:
+                        cur_l.close()
                 else:
-                    st.info("Registrá al menos un egreso para ver el gráfico.")
+                    st.error("Sin conexion a la base de datos. Recarga la pagina.")
+            st.caption("Sin cuenta? Pedile al administrador que te registre.")
 
-            with col_t:
-                st.subheader("📋 Últimos Movimientos")
-                cur.execute("""
-                    SELECT fecha, tipo, COALESCE(categoria,'-') AS categoria, monto, descripcion
-                    FROM movimientos WHERE user_id = %s
-                    ORDER BY fecha DESC, id DESC LIMIT 10
-                """, (st.session_state.user_id,))
-                ultimos = cur.fetchall()
-                if ultimos:
-                    df_u = pd.DataFrame([dict(r) for r in ultimos])
-                    df_u["monto"] = df_u["monto"].apply(lambda v: fmt_gs(v))
-                    st.dataframe(df_u, use_container_width=True, hide_index=True)
-                else:
-                    st.info("Sin movimientos todavía.")
-        finally:
-            cur.close()
+    st.stop()  # BLOQUEO TOTAL: el dashboard nunca renderiza sin sesion confirmada
 
-    # -----------------------------------------------------
-    # PESTAÑA 2: PRÉSTAMOS P2P (REFACTORIZADA + DASHBOARD)
-    # -----------------------------------------------------
-    with menu[1]:
-        st.header("🤝 Préstamos P2P — Motor Financiero PY")
-        st.caption("Cálculos con precisión Decimal · Sistema Francés · Redondeo a Gs. entero · IVA 10% informativo")
+# =========================================================
+# 6. DASHBOARD - solo alcanzable si logged_in = True
+# =========================================================
+# Asegurarse de tener role (compatibilidad sesiones antiguas)
+if "role" not in st.session_state:
+    conn_r, cur_r = get_cursor()
+    try:
+        cur_r.execute("SELECT role FROM usuarios WHERE id = %s", (st.session_state.user_id,))
+        row_r = cur_r.fetchone()
+        st.session_state.role = (row_r['role'] if row_r else 'user') or 'user'
+    finally:
+        cur_r.close()
 
-        conn, cur = get_cursor()
-        try:
-            # -------- DASHBOARD KPIs --------
-            cur.execute("""
-                SELECT
-                    COALESCE(SUM(CASE WHEN prestamista_id = %(uid)s AND estado='aprobado' THEN total_pagar ELSE 0 END),0) AS por_cobrar,
-                    COALESCE(SUM(CASE WHEN prestatario_id = %(uid)s AND estado='aprobado' THEN total_pagar ELSE 0 END),0) AS por_pagar,
-                    COALESCE(SUM(CASE WHEN prestamista_id = %(uid)s AND estado='pagado'   THEN total_pagar ELSE 0 END),0) AS cobrado,
-                    COUNT(*) FILTER (WHERE estado='pendiente'
-                        AND (prestamista_id=%(uid)s OR prestatario_id=%(uid)s)) AS n_pend
-                FROM prestamos
-                WHERE prestamista_id = %(uid)s OR prestatario_id = %(uid)s
-            """, {"uid": st.session_state.user_id})
-            kp = cur.fetchone() or {}
-            por_cobrar = Decimal(str(kp['por_cobrar'] or 0))
-            por_pagar  = Decimal(str(kp['por_pagar']  or 0))
-            cobrado    = Decimal(str(kp['cobrado']    or 0))
-            n_pend     = int(kp['n_pend'] or 0)
-            balance    = por_cobrar - por_pagar
+is_admin = st.session_state.get("role", "user") == "admin"
 
-            k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("💚 Por Cobrar",  fmt_gs(por_cobrar))
-            k2.metric("❤️ Por Pagar",   fmt_gs(por_pagar))
-            k3.metric("✅ Ya Cobrado",  fmt_gs(cobrado))
-            k4.metric(
-                "⚖️ Balance Neto", fmt_gs(balance),
-                delta="Acreedor neto" if balance >= 0 else "Deudor neto",
-                delta_color="normal" if balance >= 0 else "inverse",
-            )
-            k5.metric("📬 Pendientes", f"{n_pend}")
+st.sidebar.title(f"👋 {st.session_state.username}")
+rol_badge = "🛡️ Administrador" if is_admin else "👤 Usuario"
+st.sidebar.markdown(f"**{rol_badge}**")
+st.sidebar.divider()
+if st.sidebar.button("Cerrar Sesión"):
+    _t = st.session_state.get("_session_token") or _cookie_mgr.get("session_pro_py")
+    if _t:
+        _revocar_token(_t)
+    _cookie_mgr.delete("session_pro_py")
+    for k in ["logged_in", "user_id", "username", "role", "_session_token"]:
+        st.session_state.pop(k, None)
+    st.rerun()
 
-            # -------- GRAFICO BARRAS: ACTIVIDAD MENSUAL --------
-            cur.execute("""
-                SELECT
-                    TO_CHAR(DATE_TRUNC('month', fecha_creacion), 'YYYY-MM') AS mes,
-                    COALESCE(SUM(CASE WHEN prestamista_id = %(uid)s THEN monto ELSE 0 END), 0) AS prestado,
-                    COALESCE(SUM(CASE WHEN prestatario_id = %(uid)s THEN monto ELSE 0 END), 0) AS pedido
-                FROM prestamos
-                WHERE (prestamista_id = %(uid)s OR prestatario_id = %(uid)s)
-                  AND estado IN ('aprobado', 'pagado')
-                  AND fecha_creacion >= NOW() - INTERVAL '12 months'
-                GROUP BY mes
-                ORDER BY mes
-            """, {"uid": st.session_state.user_id})
-            rows_chart = cur.fetchall()
+# Pestañas: el admin ve una adicional "👥 Usuarios"
+tabs_labels = ["💰 Movimientos", "🤝 Préstamos", "📈 Inversiones", "🎯 Ahorros"]
+if is_admin:
+    tabs_labels.append("👥 Usuarios")
+menu = st.tabs(tabs_labels)
 
-            if rows_chart:
-                df_chart = pd.DataFrame([dict(r) for r in rows_chart])
-                df_chart["prestado"] = df_chart["prestado"].astype(float)
-                df_chart["pedido"]   = df_chart["pedido"].astype(float)
+# -----------------------------------------------------
+# PESTAÑA 1: MOVIMIENTOS (DASHBOARD + PLOTLY)
+# -----------------------------------------------------
+with menu[0]:
+    st.header("💰 Gestión de Caja")
 
-                fig_bar = go.Figure()
-                fig_bar.add_trace(go.Bar(
-                    x=df_chart["mes"], y=df_chart["prestado"],
-                    name="Prestado (salida)",
-                    marker_color="#00E5FF",
-                    hovertemplate="<b>%{x}</b><br>Prestado: %{y:,.0f} Gs.<extra></extra>",
-                ))
-                fig_bar.add_trace(go.Bar(
-                    x=df_chart["mes"], y=df_chart["pedido"],
-                    name="Pedido (entrada)",
-                    marker_color="#00E676",
-                    hovertemplate="<b>%{x}</b><br>Pedido: %{y:,.0f} Gs.<extra></extra>",
-                ))
-                fig_bar.update_layout(
-                    title=dict(text="📊 Actividad mensual de préstamos (12 meses)", font=dict(color="#FFFFFF", size=15)),
-                    barmode="group",
-                    height=320,
-                    margin=dict(l=10, r=10, t=50, b=10),
+    # -------- DASHBOARD KPIs --------
+    conn, cur = get_cursor()
+    try:
+        cur.execute("""
+            SELECT
+                COALESCE(SUM(CASE WHEN tipo='Ingreso' THEN monto ELSE 0 END),0) AS ingresos,
+                COALESCE(SUM(CASE WHEN tipo='Egreso'  THEN monto ELSE 0 END),0) AS egresos
+            FROM movimientos WHERE user_id = %s
+        """, (st.session_state.user_id,))
+        tot = cur.fetchone()
+        ingresos_tot = Decimal(str(tot['ingresos'] or 0))
+        egresos_tot  = Decimal(str(tot['egresos']  or 0))
+
+        cur.execute("SELECT COALESCE(SUM(monto), 0) AS total FROM gastos")
+        gastos_tot = Decimal(str((cur.fetchone() or {}).get('total', 0) or 0))
+
+        saldo_neto = ingresos_tot - egresos_tot - gastos_tot
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("💵 Ingresos Totales",  fmt_gs(ingresos_tot))
+        k2.metric("💸 Egresos Totales",   fmt_gs(egresos_tot))
+        k3.metric("🏢 Gastos Adm.",        fmt_gs(gastos_tot))
+        k4.metric(
+            "📊 Balance Neto",
+            fmt_gs(saldo_neto),
+            delta=f"{'▲' if saldo_neto >= 0 else '▼'} {fmt_gs(abs(saldo_neto))}",
+            delta_color="normal" if saldo_neto >= 0 else "inverse",
+        )
+
+        st.divider()
+
+        # -------- FORMULARIO NUEVO MOVIMIENTO --------
+        CATEGORIAS_EGRESO = ["Alimentación", "Transporte", "Vivienda", "Servicios",
+                             "Salud", "Educación", "Ocio", "Ropa", "Otros"]
+        CATEGORIAS_INGRESO = ["Sueldo", "Freelance", "Ventas", "Intereses", "Otros"]
+
+        with st.expander("➕ Registrar Nuevo Movimiento", expanded=False):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                tipo = st.selectbox("Tipo", ["Ingreso", "Egreso"])
+                cats = CATEGORIAS_INGRESO if tipo == "Ingreso" else CATEGORIAS_EGRESO
+                categoria = st.selectbox("Categoría", cats)
+            with col2:
+                monto = st.number_input("Monto (Gs.)", min_value=0, step=5000)
+                fecha = st.date_input("Fecha", datetime.now())
+            with col3:
+                desc = st.text_input("Descripción")
+                st.write(""); st.write("")  # espaciado
+                if st.button("💾 Guardar Movimiento", use_container_width=True):
+                    if monto <= 0:
+                        st.warning("El monto debe ser mayor a 0.")
+                    else:
+                        try:
+                            cur.execute(
+                                "INSERT INTO movimientos (user_id, tipo, monto, descripcion, fecha, categoria) VALUES (%s,%s,%s,%s,%s,%s)",
+                                (st.session_state.user_id, tipo, monto, desc, fecha, categoria)
+                            )
+                            conn.commit()
+                            st.success("¡Movimiento registrado!")
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Error: {e}")
+
+        # -------- GRÁFICO TORTA EGRESOS --------
+        cur.execute("""
+            SELECT COALESCE(categoria,'Otros') AS categoria, SUM(monto) AS total
+            FROM movimientos
+            WHERE user_id = %s AND tipo = 'Egreso'
+            GROUP BY categoria ORDER BY total DESC
+        """, (st.session_state.user_id,))
+        egresos_cat = cur.fetchall()
+
+        col_g, col_t = st.columns([3, 2])
+
+        with col_g:
+            st.subheader("🍩 Egresos por Categoría")
+            if egresos_cat:
+                df_cat = pd.DataFrame([dict(r) for r in egresos_cat])
+                df_cat["total"] = df_cat["total"].astype(float)
+                fig = px.pie(
+                    df_cat, names="categoria", values="total",
+                    hole=0.55,
+                    color_discrete_sequence=px.colors.sequential.Blues_r
+                )
+                fig.update_traces(
+                    textposition="outside",
+                    textinfo="label+percent",
+                    hovertemplate="<b>%{label}</b><br>%{value:,.0f} Gs.<extra></extra>"
+                )
+                fig.update_layout(
+                    showlegend=False,
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    height=380,
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(family="Inter", color="#FFFFFF"),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                                font=dict(color="#FFFFFF")),
-                    hovermode="x unified",
+                    font=dict(family="Inter", size=13, color="#FFFFFF"),
                 )
-                fig_bar.update_xaxes(showgrid=False, color="#FFFFFF", tickangle=-30)
-                fig_bar.update_yaxes(showgrid=True, gridcolor="#1E1E1E", color="#FFFFFF", tickformat=",.0f")
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-            st.divider()
-
-            cur.execute(
-                "SELECT id, username FROM usuarios WHERE id != %s ORDER BY username",
-                (st.session_state.user_id,)
-            )
-            usuarios_dict = {u['username']: u['id'] for u in cur.fetchall()}
-
-            if not usuarios_dict:
-                st.info("📭 Aún no hay otros usuarios registrados para operar. Invita a alguien a crear cuenta.")
-            else:
-                col_f, col_s = st.columns(2)
-
-                # ---------------- NUEVA PROPUESTA ----------------
-                with col_f:
-                    st.subheader("📝 Nueva Propuesta")
-
-                    # Inputs FUERA del form → permiten simulación en vivo
-                    socio = st.selectbox("Elegir Socio", list(usuarios_dict.keys()))
-                    mon = st.number_input(
-                        "Monto Capital (Gs.)", min_value=0, step=100000, value=1000000
-                    )
-                    col_t, col_p = st.columns(2)
-                    with col_t:
-                        inte = st.number_input(
-                            "Tasa mensual (%)", min_value=0.0, max_value=50.0,
-                            value=5.0, step=0.25,
-                            help="Tasa nominal mensual. Ej: 5% mensual ≈ 79.6% anual efectivo."
-                        )
-                    with col_p:
-                        plazo = st.number_input(
-                            "Plazo (meses)", min_value=1, max_value=120, value=12, step=1
-                        )
-                    sistema = st.selectbox(
-                        "Sistema de amortización",
-                        ["Francés", "Alemán", "Simple"],
-                        help="Francés: cuota fija (estándar BCP). Alemán: capital fijo. Simple: sin capitalización."
-                    )
-                    rol = st.radio("Acción", ["Le voy a prestar", "Le pido prestado"], horizontal=True)
-
-                    # ---------- SIMULADOR EN VIVO ----------
-                    if mon > 0 and plazo > 0:
-                        sim = calcular_prestamo(mon, inte, plazo, sistema)
-                        if sim:
-                            st.markdown("##### 🧮 Simulación")
-                            m1, m2, m3 = st.columns(3)
-                            m1.metric("Cuota mensual", fmt_gs(sim["cuota_promedio"]))
-                            m2.metric("Total a pagar", fmt_gs(sim["total_pagar"]))
-                            m3.metric("Intereses", fmt_gs(sim["total_intereses"]))
-                            m4, m5, m6 = st.columns(3)
-                            m4.metric("TEA", f"{sim['tea']}%", help="Tasa Efectiva Anual")
-                            m5.metric("CET anual", f"{sim['cet_anual']}%", help="Costo Efectivo Total (BCP)")
-                            m6.metric("IVA s/intereses", fmt_gs(sim["iva_intereses"]))
-
-                            with st.expander("📅 Ver cronograma de amortización"):
-                                df_cron = pd.DataFrame(sim["cronograma"])
-                                st.dataframe(df_cron, use_container_width=True, hide_index=True)
-
-                    # ---------- ENVIAR ----------
-                    if st.button("📤 Enviar Solicitud", use_container_width=True, type="primary"):
-                        # Validaciones
-                        if mon <= 0:
-                            st.error("El monto debe ser mayor a 0.")
-                        elif plazo <= 0:
-                            st.error("El plazo debe ser mayor a 0.")
-                        elif socio not in usuarios_dict:
-                            st.error("Socio inválido.")
-                        elif usuarios_dict[socio] == st.session_state.user_id:
-                            st.error("No podés prestarte a vos mismo.")
-                        else:
-                            t_id = usuarios_dict[socio]
-                            p_id = st.session_state.user_id if rol == "Le voy a prestar" else t_id
-                            b_id = t_id if rol == "Le voy a prestar" else st.session_state.user_id
-                            sim = calcular_prestamo(mon, inte, plazo, sistema)
-                            venc = date.today() + relativedelta(months=int(plazo))
-                            try:
-                                cur.execute("""
-                                    INSERT INTO prestamos
-                                      (prestamista_id, prestatario_id, monto, interes,
-                                       plazo_meses, sistema, fecha_vencimiento,
-                                       cuota_mensual, total_pagar)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                """, (
-                                    p_id, b_id, mon, inte,
-                                    int(plazo), sistema, venc,
-                                    int(sim["cuota_promedio"]), int(sim["total_pagar"])
-                                ))
-                                conn.commit()
-                                st.success("✅ Propuesta enviada con cronograma calculado.")
-                                st.rerun()
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"Error al enviar propuesta: {e}")
-
-                # ---------------- BANDEJA DE ENTRADA ----------------
-                with col_s:
-                    st.subheader("📥 Bandeja de Entrada")
-                    # JOIN corregido: usamos CASE para traer al OTRO usuario sin duplicar filas.
-                    cur.execute("""
-                        SELECT
-                            p.id,
-                            p.monto,
-                            p.interes,
-                            p.plazo_meses,
-                            p.sistema,
-                            p.cuota_mensual,
-                            p.total_pagar,
-                            p.fecha_vencimiento,
-                            CASE
-                                WHEN p.prestamista_id = %(uid)s THEN 'Prestás a'
-                                ELSE 'Te presta'
-                            END AS rol,
-                            (SELECT username FROM usuarios
-                             WHERE id = CASE
-                                WHEN p.prestamista_id = %(uid)s THEN p.prestatario_id
-                                ELSE p.prestamista_id
-                             END) AS contraparte
-                        FROM prestamos p
-                        WHERE (p.prestamista_id = %(uid)s OR p.prestatario_id = %(uid)s)
-                          AND p.estado = 'pendiente'
-                        ORDER BY p.fecha_creacion DESC
-                    """, {"uid": st.session_state.user_id})
-
-                    pendientes = cur.fetchall()
-                    if not pendientes:
-                        st.info("No tienes propuestas pendientes.")
-                    else:
-                        for p_rec in pendientes:
-                            titulo = f"{p_rec['rol']} {p_rec['contraparte']} — {fmt_gs(p_rec['monto'])}"
-                            with st.expander(titulo):
-                                st.write(f"**Tasa:** {p_rec['interes']}% mensual")
-                                st.write(f"**Plazo:** {p_rec['plazo_meses']} meses ({p_rec['sistema']})")
-                                if p_rec['cuota_mensual']:
-                                    st.write(f"**Cuota estimada:** {fmt_gs(p_rec['cuota_mensual'])}")
-                                if p_rec['total_pagar']:
-                                    st.write(f"**Total a pagar:** {fmt_gs(p_rec['total_pagar'])}")
-                                if p_rec['fecha_vencimiento']:
-                                    st.write(f"**Vencimiento:** {p_rec['fecha_vencimiento']}")
-
-                                _cols = st.columns(3) if is_admin else st.columns(2)
-                                if _cols[0].button("✅ Aprobar", key=f"a_{p_rec['id']}", use_container_width=True):
-                                    try:
-                                        cur.execute(
-                                            "UPDATE prestamos SET estado = 'aprobado' WHERE id = %s",
-                                            (p_rec['id'],)
-                                        )
-                                        conn.commit()
-                                        st.rerun()
-                                    except Exception as e:
-                                        conn.rollback()
-                                        st.error(f"Error: {e}")
-                                if _cols[1].button("❌ Rechazar", key=f"r_{p_rec['id']}", use_container_width=True):
-                                    try:
-                                        cur.execute(
-                                            "UPDATE prestamos SET estado = 'rechazado' WHERE id = %s",
-                                            (p_rec['id'],)
-                                        )
-                                        conn.commit()
-                                        st.rerun()
-                                    except Exception as e:
-                                        conn.rollback()
-                                        st.error(f"Error: {e}")
-                                if is_admin and _cols[2].button("🗑️ Eliminar", key=f"del_pend_{p_rec['id']}", use_container_width=True):
-                                    try:
-                                        cur.execute("DELETE FROM prestamos WHERE id = %s", (p_rec['id'],))
-                                        conn.commit()
-                                        st.rerun()
-                                    except Exception as e:
-                                        conn.rollback()
-                                        st.error(f"Error: {e}")
-
-            # ---------------- PRÉSTAMOS ACTIVOS ----------------
-            st.divider()
-            st.subheader("📈 Préstamos Activos")
-            cur.execute("""
-                SELECT
-                    p.id,
-                    u1.username AS prestamista,
-                    u2.username AS prestatario,
-                    p.prestamista_id,
-                    p.monto,
-                    p.interes AS tasa_mensual_pct,
-                    p.plazo_meses,
-                    p.sistema,
-                    p.cuota_mensual,
-                    p.total_pagar,
-                    p.fecha_vencimiento
-                FROM prestamos p
-                JOIN usuarios u1 ON p.prestamista_id = u1.id
-                JOIN usuarios u2 ON p.prestatario_id = u2.id
-                WHERE (p.prestamista_id = %(uid)s OR p.prestatario_id = %(uid)s)
-                  AND p.estado = 'aprobado'
-                ORDER BY p.fecha_vencimiento NULLS LAST
-            """, {"uid": st.session_state.user_id})
-            rows = cur.fetchall()
-            if not rows:
-                st.info("No tienes préstamos activos.")
-            else:
-                for row in rows:
-                    es_prestamista = (row['prestamista_id'] == st.session_state.user_id)
-                    rol_txt = "Prestás a" if es_prestamista else "Te presta"
-                    contraparte = row['prestatario'] if es_prestamista else row['prestamista']
-                    titulo_act = f"{rol_txt} **{contraparte}** — {fmt_gs(row['monto'])}"
-                    with st.expander(titulo_act):
-                        ia1, ia2, ia3 = st.columns(3)
-                        ia1.write(f"**Tasa:** {row['tasa_mensual_pct']}% mensual")
-                        ia2.write(f"**Plazo:** {row['plazo_meses']} meses ({row['sistema']})")
-                        ia3.write(f"**Vence:** {row['fecha_vencimiento'] or 'S/D'}")
-                        ib1, ib2 = st.columns(2)
-                        ib1.metric("Cuota mensual", fmt_gs(row['cuota_mensual'] or 0))
-                        ib2.metric("Total a pagar", fmt_gs(row['total_pagar'] or 0))
-
-                        btn_cols = st.columns(3) if is_admin else st.columns(1)
-                        if btn_cols[0].button("💰 Registrar Pago", key=f"pago_{row['id']}", use_container_width=True, type="primary"):
-                            try:
-                                cur.execute("UPDATE prestamos SET estado = 'pagado' WHERE id = %s", (row['id'],))
-                                conn.commit()
-                                st.success("Pago registrado. El préstamo se movió a 'Cobrado'.")
-                                st.rerun()
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"Error: {e}")
-                        if is_admin:
-                            if btn_cols[1].button("🗑️ Eliminar", key=f"del_act_{row['id']}", use_container_width=True):
-                                try:
-                                    cur.execute("DELETE FROM prestamos WHERE id = %s", (row['id'],))
-                                    conn.commit()
-                                    st.rerun()
-                                except Exception as e:
-                                    conn.rollback()
-                                    st.error(f"Error: {e}")
-
-            # ---------------- PRÉSTAMOS PAGADOS (historial) ----------------
-            st.divider()
-            st.subheader("✅ Historial de Cobros")
-            cur.execute("""
-                SELECT
-                    p.id,
-                    u1.username AS prestamista,
-                    u2.username AS prestatario,
-                    p.prestamista_id,
-                    p.monto, p.total_pagar, p.fecha_vencimiento
-                FROM prestamos p
-                JOIN usuarios u1 ON p.prestamista_id = u1.id
-                JOIN usuarios u2 ON p.prestatario_id = u2.id
-                WHERE (p.prestamista_id = %(uid)s OR p.prestatario_id = %(uid)s)
-                  AND p.estado = 'pagado'
-                ORDER BY p.fecha_vencimiento DESC NULLS LAST
-            """, {"uid": st.session_state.user_id})
-            pagados = cur.fetchall()
-            if not pagados:
-                st.info("Aun no hay préstamos registrados como pagados.")
-            else:
-                for pag in pagados:
-                    es_p = (pag['prestamista_id'] == st.session_state.user_id)
-                    lab = ("Cobrado de" if es_p else "Pagado a") + f" **{pag['prestatario'] if es_p else pag['prestamista']}**"
-                    with st.expander(f"{lab} — {fmt_gs(pag['total_pagar'] or pag['monto'])}"):
-                        st.write(f"**Capital:** {fmt_gs(pag['monto'])} | **Total pagado:** {fmt_gs(pag['total_pagar'] or pag['monto'])}")
-                        if is_admin:
-                            if st.button("🗑️ Eliminar registro", key=f"del_pag_{pag['id']}", use_container_width=True):
-                                try:
-                                    cur.execute("DELETE FROM prestamos WHERE id = %s", (pag['id'],))
-                                    conn.commit()
-                                    st.rerun()
-                                except Exception as e:
-                                    conn.rollback()
-                                    st.error(f"Error: {e}")
-
-        finally:
-            cur.close()
-
-    # -----------------------------------------------------
-    # PESTAÑA 3: INVERSIONES (GGR + PROYECCIÓN 12 MESES)
-    # -----------------------------------------------------
-    with menu[2]:
-        st.header("📈 Seguimiento de Inversiones")
-        st.caption("GGR (Gross Growth Rate) mensual equivalente a partir del ROI anual · Proyección de valor a 12 meses")
-
-        conn, cur = get_cursor()
-        try:
-            # -------- KPIs portfolio --------
-            cur.execute("""
-                SELECT
-                    COALESCE(SUM(monto),0) AS capital,
-                    COALESCE(SUM(monto * roi_esperado / 100.0),0) AS ganancia_anual_esperada,
-                    COUNT(*) AS n
-                FROM inversiones WHERE user_id = %s
-            """, (st.session_state.user_id,))
-            t = cur.fetchone() or {}
-            capital_tot = Decimal(str(t['capital'] or 0))
-            gan_anual = Decimal(str(t['ganancia_anual_esperada'] or 0))
-            valor_12m = capital_tot + gan_anual
-            n_activos = t['n'] or 0
-
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("💼 Capital Invertido", fmt_gs(capital_tot))
-            k2.metric("📈 Ganancia Anual Est.", fmt_gs(gan_anual))
-            k3.metric("🎯 Valor Proyectado 12m", fmt_gs(valor_12m))
-            k4.metric("🧾 Activos", f"{n_activos}")
-
-            st.divider()
-
-            # -------- FORMULARIO REGISTRO --------
-            with st.expander("➕ Registrar Nuevo Activo", expanded=(n_activos == 0)):
-                with st.form("inv_form"):
-                    c1, c2, c3 = st.columns(3)
-                    with c1:
-                        n_inv = st.text_input("Nombre de la Inversión")
-                    with c2:
-                        m_inv = st.number_input("Capital Invertido (Gs.)", min_value=0, step=100000)
-                    with c3:
-                        roi_inv = st.number_input("ROI Anual Estimado (%)", min_value=0.0, step=0.5, value=10.0)
-                    if st.form_submit_button("💾 Registrar", use_container_width=True):
-                        if not n_inv or m_inv <= 0:
-                            st.warning("Completa nombre y monto > 0.")
-                        else:
-                            try:
-                                cur.execute(
-                                    "INSERT INTO inversiones (user_id, nombre, monto, roi_esperado, fecha) VALUES (%s, %s, %s, %s, %s)",
-                                    (st.session_state.user_id, n_inv, m_inv, roi_inv, datetime.now().date())
-                                )
-                                conn.commit()
-                                st.success("Inversión guardada")
-                                st.rerun()
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"Error: {e}")
-
-            # -------- TABLA CON GGR Y PROYECCIÓN --------
-            cur.execute(
-                "SELECT id, nombre, monto, roi_esperado, fecha FROM inversiones WHERE user_id = %s ORDER BY fecha DESC",
-                (st.session_state.user_id,)
-            )
-            invs = cur.fetchall()
-
-            if not invs:
-                st.info("Aún no registraste inversiones. Añadí un activo para ver GGR y proyecciones.")
-            else:
-                st.subheader("📊 Portfolio con GGR y Proyección 12 meses")
-                filas = []
-                for r in invs:
-                    capital = Decimal(str(r['monto']))
-                    roi_anual = Decimal(str(r['roi_esperado'] or 0)) / Decimal("100")
-                    # GGR mensual compuesto equivalente: (1+roi_anual)^(1/12) - 1
-                    if roi_anual > -1:
-                        ggr_mensual = (Decimal("1") + roi_anual) ** (Decimal("1") / Decimal("12")) - Decimal("1")
-                    else:
-                        ggr_mensual = Decimal("0")
-                    valor_12 = capital * (Decimal("1") + roi_anual)
-                    ganancia = valor_12 - capital
-                    filas.append({
-                        "Activo": r['nombre'],
-                        "Capital": fmt_gs(capital),
-                        "ROI Anual": f"{roi_anual*100:.2f}%",
-                        "GGR Mensual": f"{ggr_mensual*100:.3f}%",
-                        "Valor a 12 m.": fmt_gs(valor_12),
-                        "Ganancia": fmt_gs(ganancia),
-                        "Fecha": r['fecha'],
-                    })
-                df_inv = pd.DataFrame(filas)
-                st.dataframe(df_inv, use_container_width=True, hide_index=True)
-
-                # -------- GRÁFICO PROYECCIÓN MENSUAL ACUMULADA --------
-                st.subheader("📉 Proyección de valor (12 meses)")
-                meses = list(range(0, 13))
-                fig = go.Figure()
-                for r in invs:
-                    capital = float(r['monto'])
-                    roi_anual = float(r['roi_esperado'] or 0) / 100.0
-                    ggr_m = (1 + roi_anual) ** (1 / 12) - 1
-                    valores = [capital * ((1 + ggr_m) ** m) for m in meses]
-                    fig.add_trace(go.Scatter(
-                        x=meses, y=valores, mode="lines+markers",
-                        name=r['nombre'],
-                        hovertemplate="Mes %{x}<br>%{y:,.0f} Gs.<extra></extra>",
-                        line=dict(width=3),
-                    ))
-                fig.update_layout(
-                    xaxis_title="Mes", yaxis_title="Valor proyectado (Gs.)",
-                    height=420, margin=dict(l=10, r=10, t=10, b=10),
-                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(family="Inter", color="#FFFFFF"),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                                font=dict(color="#FFFFFF")),
-                    hovermode="x unified",
-                )
-                fig.update_xaxes(showgrid=True, gridcolor="#2A2A2A", color="#FFFFFF")
-                fig.update_yaxes(showgrid=True, gridcolor="#2A2A2A", color="#FFFFFF", tickformat=",.0f")
                 st.plotly_chart(fig, use_container_width=True)
-        finally:
-            cur.close()
-
-    # -----------------------------------------------------
-    # PESTAÑA 4: AHORROS (DASHBOARD + APORTE PERSONALIZADO)
-    # -----------------------------------------------------
-    with menu[3]:
-        st.header("🎯 Metas de Ahorro")
-
-        conn, cur = get_cursor()
-        try:
-            # -------- KPIs globales --------
-            cur.execute("""
-                SELECT COALESCE(SUM(actual),0) AS ahorrado,
-                       COALESCE(SUM(objetivo),0) AS objetivo,
-                       COUNT(*) AS n
-                FROM ahorros WHERE user_id = %s
-            """, (st.session_state.user_id,))
-            t = cur.fetchone() or {}
-            ahorrado = Decimal(str(t['ahorrado'] or 0))
-            objetivo = Decimal(str(t['objetivo'] or 0))
-            faltante = max(objetivo - ahorrado, Decimal("0"))
-            pct_global = float(ahorrado / objetivo) if objetivo > 0 else 0.0
-            pct_global = min(pct_global, 1.0)
-
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("💰 Ahorrado Total", fmt_gs(ahorrado))
-            k2.metric("🏁 Objetivo Total", fmt_gs(objetivo))
-            k3.metric("📉 Falta", fmt_gs(faltante))
-            k4.metric("📊 Progreso Global", f"{pct_global*100:.1f}%")
-
-            st.markdown("**Progreso general**")
-            st.progress(pct_global)
-
-            st.divider()
-
-            # -------- CREAR NUEVA META --------
-            with st.expander("🎯 Crear Nueva Meta"):
-                with st.form("ah_form"):
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        n_meta = st.text_input("¿Para qué estás ahorrando?")
-                    with c2:
-                        obj_meta = st.number_input("Objetivo Final (Gs.)", min_value=0, step=100000)
-                    if st.form_submit_button("Crear Meta", use_container_width=True):
-                        if not n_meta or obj_meta <= 0:
-                            st.warning("Completa nombre y objetivo > 0.")
-                        else:
-                            try:
-                                cur.execute(
-                                    "INSERT INTO ahorros (user_id, meta_nombre, objetivo) VALUES (%s, %s, %s)",
-                                    (st.session_state.user_id, n_meta, obj_meta)
-                                )
-                                conn.commit()
-                                st.rerun()
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"Error: {e}")
-
-            # -------- LISTA DE METAS --------
-            cur.execute(
-                "SELECT id, meta_nombre, objetivo, actual FROM ahorros WHERE user_id = %s ORDER BY id",
-                (st.session_state.user_id,)
-            )
-            metas = cur.fetchall()
-
-            if not metas:
-                st.info("🗒️ Todavía no creaste metas de ahorro. Empezá creando la primera arriba.")
             else:
-                for m in metas:
-                    objetivo_m = float(m['objetivo']) if m['objetivo'] else 0
-                    actual_m = float(m['actual']) if m['actual'] else 0
-                    porcentaje = (actual_m / objetivo_m) if objetivo_m > 0 else 0
-                    porcentaje_c = min(porcentaje, 1.0)
-                    completo = porcentaje >= 1.0
+                st.info("Registrá al menos un egreso para ver el gráfico.")
 
-                    st.markdown(f"### {'🏆 ' if completo else '🎯 '}{m['meta_nombre']}")
-                    c_inf, c_bar = st.columns([1, 3])
-                    with c_inf:
-                        st.metric("Progreso", f"{porcentaje*100:.1f}%")
-                    with c_bar:
-                        st.write(f"**{fmt_gs(actual_m)}** / {fmt_gs(objetivo_m)}  ·  falta **{fmt_gs(max(objetivo_m-actual_m,0))}**")
-                        st.progress(porcentaje_c)
+        with col_t:
+            st.subheader("📋 Últimos Movimientos")
+            cur.execute("""
+                SELECT fecha, tipo, COALESCE(categoria,'-') AS categoria, monto, descripcion
+                FROM movimientos WHERE user_id = %s
+                ORDER BY fecha DESC, id DESC LIMIT 10
+            """, (st.session_state.user_id,))
+            ultimos = cur.fetchall()
+            if ultimos:
+                df_u = pd.DataFrame([dict(r) for r in ultimos])
+                df_u["monto"] = df_u["monto"].apply(lambda v: fmt_gs(v))
+                st.dataframe(df_u, use_container_width=True, hide_index=True)
+            else:
+                st.info("Sin movimientos todavía.")
+    finally:
+        cur.close()
 
-                    # ---- Aportar ----
-                    c_qa, c_qb, c_qc, c_custom = st.columns([1, 1, 1, 2])
-                    aportes_rapidos = [50000, 100000, 500000]
-                    for idx, apq in enumerate(aportes_rapidos):
-                        col_ref = [c_qa, c_qb, c_qc][idx]
-                        if col_ref.button(f"+ {fmt_gs(apq)}", key=f"q{apq}_{m['id']}", use_container_width=True):
-                            try:
-                                cur.execute(
-                                    "UPDATE ahorros SET actual = actual + %s WHERE id = %s AND user_id = %s",
-                                    (apq, m['id'], st.session_state.user_id)
-                                )
-                                conn.commit()
-                                st.rerun()
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"Error: {e}")
+# -----------------------------------------------------
+# PESTAÑA 2: PRÉSTAMOS P2P (REFACTORIZADA + DASHBOARD)
+# -----------------------------------------------------
+with menu[1]:
+    st.header("🤝 Préstamos P2P — Motor Financiero PY")
+    st.caption("Cálculos con precisión Decimal · Sistema Francés · Redondeo a Gs. entero · IVA 10% informativo")
 
-                    with c_custom:
-                        with st.form(f"aporte_custom_{m['id']}", clear_on_submit=True):
-                            cc1, cc2 = st.columns([2, 1])
-                            with cc1:
-                                monto_custom = st.number_input(
-                                    "Aporte personalizado (Gs.)",
-                                    min_value=0, step=10000, key=f"mc_{m['id']}"
-                                )
-                            with cc2:
-                                st.write(""); st.write("")
-                                enviar = st.form_submit_button("💵 Aportar", use_container_width=True)
-                            if enviar:
-                                if monto_custom <= 0:
-                                    st.warning("Ingresá un monto > 0.")
-                                else:
-                                    try:
-                                        cur.execute(
-                                            "UPDATE ahorros SET actual = actual + %s WHERE id = %s AND user_id = %s",
-                                            (monto_custom, m['id'], st.session_state.user_id)
-                                        )
-                                        conn.commit()
-                                        st.success(f"Aporte de {fmt_gs(monto_custom)} registrado.")
-                                        st.rerun()
-                                    except Exception as e:
-                                        conn.rollback()
-                                        st.error(f"Error: {e}")
+    conn, cur = get_cursor()
+    try:
+        # -------- DASHBOARD KPIs --------
+        cur.execute("""
+            SELECT
+                COALESCE(SUM(CASE WHEN prestamista_id = %(uid)s AND estado='aprobado' THEN total_pagar ELSE 0 END),0) AS por_cobrar,
+                COALESCE(SUM(CASE WHEN prestatario_id = %(uid)s AND estado='aprobado' THEN total_pagar ELSE 0 END),0) AS por_pagar,
+                COALESCE(SUM(CASE WHEN prestamista_id = %(uid)s AND estado='pagado'   THEN total_pagar ELSE 0 END),0) AS cobrado,
+                COUNT(*) FILTER (WHERE estado='pendiente'
+                    AND (prestamista_id=%(uid)s OR prestatario_id=%(uid)s)) AS n_pend
+            FROM prestamos
+            WHERE prestamista_id = %(uid)s OR prestatario_id = %(uid)s
+        """, {"uid": st.session_state.user_id})
+        kp = cur.fetchone() or {}
+        por_cobrar = Decimal(str(kp['por_cobrar'] or 0))
+        por_pagar  = Decimal(str(kp['por_pagar']  or 0))
+        cobrado    = Decimal(str(kp['cobrado']    or 0))
+        n_pend     = int(kp['n_pend'] or 0)
+        balance    = por_cobrar - por_pagar
 
-                    st.divider()
-        finally:
-            cur.close()
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("💚 Por Cobrar",  fmt_gs(por_cobrar))
+        k2.metric("❤️ Por Pagar",   fmt_gs(por_pagar))
+        k3.metric("✅ Ya Cobrado",  fmt_gs(cobrado))
+        k4.metric(
+            "⚖️ Balance Neto", fmt_gs(balance),
+            delta="Acreedor neto" if balance >= 0 else "Deudor neto",
+            delta_color="normal" if balance >= 0 else "inverse",
+        )
+        k5.metric("📬 Pendientes", f"{n_pend}")
 
-    # -----------------------------------------------------
-    # PESTAÑA 5: USUARIOS (SÓLO ADMIN)
-    # -----------------------------------------------------
-    if is_admin:
-        with menu[4]:
-            st.header("👥 Gestión de Usuarios")
-            st.caption("Panel de administración · Sólo los administradores pueden crear, editar o eliminar usuarios.")
+        # -------- GRAFICO BARRAS: ACTIVIDAD MENSUAL --------
+        cur.execute("""
+            SELECT
+                TO_CHAR(DATE_TRUNC('month', fecha_creacion), 'YYYY-MM') AS mes,
+                COALESCE(SUM(CASE WHEN prestamista_id = %(uid)s THEN monto ELSE 0 END), 0) AS prestado,
+                COALESCE(SUM(CASE WHEN prestatario_id = %(uid)s THEN monto ELSE 0 END), 0) AS pedido
+            FROM prestamos
+            WHERE (prestamista_id = %(uid)s OR prestatario_id = %(uid)s)
+              AND estado IN ('aprobado', 'pagado')
+              AND fecha_creacion >= NOW() - INTERVAL '12 months'
+            GROUP BY mes
+            ORDER BY mes
+        """, {"uid": st.session_state.user_id})
+        rows_chart = cur.fetchall()
 
-            conn, cur = get_cursor()
-            try:
-                # -------- KPIs --------
+        if rows_chart:
+            df_chart = pd.DataFrame([dict(r) for r in rows_chart])
+            df_chart["prestado"] = df_chart["prestado"].astype(float)
+            df_chart["pedido"]   = df_chart["pedido"].astype(float)
+
+            fig_bar = go.Figure()
+            fig_bar.add_trace(go.Bar(
+                x=df_chart["mes"], y=df_chart["prestado"],
+                name="Prestado (salida)",
+                marker_color="#00E5FF",
+                hovertemplate="<b>%{x}</b><br>Prestado: %{y:,.0f} Gs.<extra></extra>",
+            ))
+            fig_bar.add_trace(go.Bar(
+                x=df_chart["mes"], y=df_chart["pedido"],
+                name="Pedido (entrada)",
+                marker_color="#00E676",
+                hovertemplate="<b>%{x}</b><br>Pedido: %{y:,.0f} Gs.<extra></extra>",
+            ))
+            fig_bar.update_layout(
+                title=dict(text="📊 Actividad mensual de préstamos (12 meses)", font=dict(color="#FFFFFF", size=15)),
+                barmode="group",
+                height=320,
+                margin=dict(l=10, r=10, t=50, b=10),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(family="Inter", color="#FFFFFF"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                            font=dict(color="#FFFFFF")),
+                hovermode="x unified",
+            )
+            fig_bar.update_xaxes(showgrid=False, color="#FFFFFF", tickangle=-30)
+            fig_bar.update_yaxes(showgrid=True, gridcolor="#1E1E1E", color="#FFFFFF", tickformat=",.0f")
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        st.divider()
+
+        cur.execute(
+            "SELECT id, username FROM usuarios WHERE id != %s ORDER BY username",
+            (st.session_state.user_id,)
+        )
+        usuarios_dict = {u['username']: u['id'] for u in cur.fetchall()}
+
+        if not usuarios_dict:
+            st.info("📭 Aún no hay otros usuarios registrados para operar. Invita a alguien a crear cuenta.")
+        else:
+            col_f, col_s = st.columns(2)
+
+            # ---------------- NUEVA PROPUESTA ----------------
+            with col_f:
+                st.subheader("📝 Nueva Propuesta")
+
+                # Inputs FUERA del form → permiten simulación en vivo
+                socio = st.selectbox("Elegir Socio", list(usuarios_dict.keys()))
+                mon = st.number_input(
+                    "Monto Capital (Gs.)", min_value=0, step=100000, value=1000000
+                )
+                col_t, col_p = st.columns(2)
+                with col_t:
+                    inte = st.number_input(
+                        "Tasa mensual (%)", min_value=0.0, max_value=50.0,
+                        value=5.0, step=0.25,
+                        help="Tasa nominal mensual. Ej: 5% mensual ≈ 79.6% anual efectivo."
+                    )
+                with col_p:
+                    plazo = st.number_input(
+                        "Plazo (meses)", min_value=1, max_value=120, value=12, step=1
+                    )
+                sistema = st.selectbox(
+                    "Sistema de amortización",
+                    ["Francés", "Alemán", "Simple"],
+                    help="Francés: cuota fija (estándar BCP). Alemán: capital fijo. Simple: sin capitalización."
+                )
+                rol = st.radio("Acción", ["Le voy a prestar", "Le pido prestado"], horizontal=True)
+
+                # ---------- SIMULADOR EN VIVO ----------
+                if mon > 0 and plazo > 0:
+                    sim = calcular_prestamo(mon, inte, plazo, sistema)
+                    if sim:
+                        st.markdown("##### 🧮 Simulación")
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Cuota mensual", fmt_gs(sim["cuota_promedio"]))
+                        m2.metric("Total a pagar", fmt_gs(sim["total_pagar"]))
+                        m3.metric("Intereses", fmt_gs(sim["total_intereses"]))
+                        m4, m5, m6 = st.columns(3)
+                        m4.metric("TEA", f"{sim['tea']}%", help="Tasa Efectiva Anual")
+                        m5.metric("CET anual", f"{sim['cet_anual']}%", help="Costo Efectivo Total (BCP)")
+                        m6.metric("IVA s/intereses", fmt_gs(sim["iva_intereses"]))
+
+                        with st.expander("📅 Ver cronograma de amortización"):
+                            df_cron = pd.DataFrame(sim["cronograma"])
+                            st.dataframe(df_cron, use_container_width=True, hide_index=True)
+
+                # ---------- ENVIAR ----------
+                if st.button("📤 Enviar Solicitud", use_container_width=True, type="primary"):
+                    # Validaciones
+                    if mon <= 0:
+                        st.error("El monto debe ser mayor a 0.")
+                    elif plazo <= 0:
+                        st.error("El plazo debe ser mayor a 0.")
+                    elif socio not in usuarios_dict:
+                        st.error("Socio inválido.")
+                    elif usuarios_dict[socio] == st.session_state.user_id:
+                        st.error("No podés prestarte a vos mismo.")
+                    else:
+                        t_id = usuarios_dict[socio]
+                        p_id = st.session_state.user_id if rol == "Le voy a prestar" else t_id
+                        b_id = t_id if rol == "Le voy a prestar" else st.session_state.user_id
+                        sim = calcular_prestamo(mon, inte, plazo, sistema)
+                        venc = date.today() + relativedelta(months=int(plazo))
+                        try:
+                            cur.execute("""
+                                INSERT INTO prestamos
+                                  (prestamista_id, prestatario_id, monto, interes,
+                                   plazo_meses, sistema, fecha_vencimiento,
+                                   cuota_mensual, total_pagar)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """, (
+                                p_id, b_id, mon, inte,
+                                int(plazo), sistema, venc,
+                                int(sim["cuota_promedio"]), int(sim["total_pagar"])
+                            ))
+                            conn.commit()
+                            st.success("✅ Propuesta enviada con cronograma calculado.")
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Error al enviar propuesta: {e}")
+
+            # ---------------- BANDEJA DE ENTRADA ----------------
+            with col_s:
+                st.subheader("📥 Bandeja de Entrada")
+                # JOIN corregido: usamos CASE para traer al OTRO usuario sin duplicar filas.
                 cur.execute("""
                     SELECT
-                        COUNT(*) AS total,
-                        COUNT(*) FILTER (WHERE role='admin') AS admins,
-                        COUNT(*) FILTER (WHERE role='user' OR role IS NULL) AS users
-                    FROM usuarios
-                """)
-                stats = cur.fetchone() or {}
-                k1, k2, k3 = st.columns(3)
-                k1.metric("👥 Total Usuarios", stats.get('total', 0) or 0)
-                k2.metric("🛡️ Administradores", stats.get('admins', 0) or 0)
-                k3.metric("👤 Usuarios Estándar", stats.get('users', 0) or 0)
+                        p.id,
+                        p.monto,
+                        p.interes,
+                        p.plazo_meses,
+                        p.sistema,
+                        p.cuota_mensual,
+                        p.total_pagar,
+                        p.fecha_vencimiento,
+                        CASE
+                            WHEN p.prestamista_id = %(uid)s THEN 'Prestás a'
+                            ELSE 'Te presta'
+                        END AS rol,
+                        (SELECT username FROM usuarios
+                         WHERE id = CASE
+                            WHEN p.prestamista_id = %(uid)s THEN p.prestatario_id
+                            ELSE p.prestamista_id
+                         END) AS contraparte
+                    FROM prestamos p
+                    WHERE (p.prestamista_id = %(uid)s OR p.prestatario_id = %(uid)s)
+                      AND p.estado = 'pendiente'
+                    ORDER BY p.fecha_creacion DESC
+                """, {"uid": st.session_state.user_id})
 
-                st.divider()
+                pendientes = cur.fetchall()
+                if not pendientes:
+                    st.info("No tienes propuestas pendientes.")
+                else:
+                    for p_rec in pendientes:
+                        titulo = f"{p_rec['rol']} {p_rec['contraparte']} — {fmt_gs(p_rec['monto'])}"
+                        with st.expander(titulo):
+                            st.write(f"**Tasa:** {p_rec['interes']}% mensual")
+                            st.write(f"**Plazo:** {p_rec['plazo_meses']} meses ({p_rec['sistema']})")
+                            if p_rec['cuota_mensual']:
+                                st.write(f"**Cuota estimada:** {fmt_gs(p_rec['cuota_mensual'])}")
+                            if p_rec['total_pagar']:
+                                st.write(f"**Total a pagar:** {fmt_gs(p_rec['total_pagar'])}")
+                            if p_rec['fecha_vencimiento']:
+                                st.write(f"**Vencimiento:** {p_rec['fecha_vencimiento']}")
 
-                # -------- CREAR NUEVO USUARIO --------
-                with st.expander("➕ Crear Nuevo Usuario", expanded=False):
-                    with st.form("create_user_form", clear_on_submit=True):
-                        cu1, cu2 = st.columns(2)
-                        with cu1:
-                            new_username = st.text_input("Nombre de usuario", key="adm_new_u")
-                            new_role = st.selectbox(
-                                "Rol", ["user", "admin"],
-                                format_func=lambda r: "🛡️ Administrador" if r == "admin" else "👤 Usuario",
-                                key="adm_new_r"
-                            )
-                        with cu2:
-                            new_password = st.text_input("Contraseña", type="password", key="adm_new_p")
-                            new_password2 = st.text_input("Confirmar contraseña", type="password", key="adm_new_p2")
-
-                        submitted = st.form_submit_button("✅ Crear Usuario", use_container_width=True)
-                        if submitted:
-                            if not new_username or not new_password:
-                                st.warning("Completá usuario y contraseña.")
-                            elif len(new_password) < 6:
-                                st.warning("La contraseña debe tener al menos 6 caracteres.")
-                            elif new_password != new_password2:
-                                st.error("Las contraseñas no coinciden.")
-                            else:
+                            _cols = st.columns(3) if is_admin else st.columns(2)
+                            if _cols[0].button("✅ Aprobar", key=f"a_{p_rec['id']}", use_container_width=True):
                                 try:
-                                    hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
                                     cur.execute(
-                                        "INSERT INTO usuarios (username, password, role) VALUES (%s, %s, %s)",
-                                        (new_username.strip(), hashed, new_role)
+                                        "UPDATE prestamos SET estado = 'aprobado' WHERE id = %s",
+                                        (p_rec['id'],)
                                     )
                                     conn.commit()
-                                    st.success(f"✅ Usuario '{new_username}' creado como {new_role}.")
                                     st.rerun()
-                                except psycopg2.errors.UniqueViolation:
+                                except Exception as e:
                                     conn.rollback()
-                                    st.error("❌ Ese nombre de usuario ya existe.")
+                                    st.error(f"Error: {e}")
+                            if _cols[1].button("❌ Rechazar", key=f"r_{p_rec['id']}", use_container_width=True):
+                                try:
+                                    cur.execute(
+                                        "UPDATE prestamos SET estado = 'rechazado' WHERE id = %s",
+                                        (p_rec['id'],)
+                                    )
+                                    conn.commit()
+                                    st.rerun()
+                                except Exception as e:
+                                    conn.rollback()
+                                    st.error(f"Error: {e}")
+                            if is_admin and _cols[2].button("🗑️ Eliminar", key=f"del_pend_{p_rec['id']}", use_container_width=True):
+                                try:
+                                    cur.execute("DELETE FROM prestamos WHERE id = %s", (p_rec['id'],))
+                                    conn.commit()
+                                    st.rerun()
                                 except Exception as e:
                                     conn.rollback()
                                     st.error(f"Error: {e}")
 
-                # -------- LISTA DE USUARIOS --------
-                st.subheader("📋 Lista de Usuarios")
-                cur.execute("""
-                    SELECT id, username, COALESCE(role,'user') AS role
-                    FROM usuarios
-                    ORDER BY (role = 'admin') DESC, username ASC
-                """)
-                users = cur.fetchall()
+        # ---------------- PRÉSTAMOS ACTIVOS ----------------
+        st.divider()
+        st.subheader("📈 Préstamos Activos")
+        cur.execute("""
+            SELECT
+                p.id,
+                u1.username AS prestamista,
+                u2.username AS prestatario,
+                p.prestamista_id,
+                p.monto,
+                p.interes AS tasa_mensual_pct,
+                p.plazo_meses,
+                p.sistema,
+                p.cuota_mensual,
+                p.total_pagar,
+                p.fecha_vencimiento
+            FROM prestamos p
+            JOIN usuarios u1 ON p.prestamista_id = u1.id
+            JOIN usuarios u2 ON p.prestatario_id = u2.id
+            WHERE (p.prestamista_id = %(uid)s OR p.prestatario_id = %(uid)s)
+              AND p.estado = 'aprobado'
+            ORDER BY p.fecha_vencimiento NULLS LAST
+        """, {"uid": st.session_state.user_id})
+        rows = cur.fetchall()
+        if not rows:
+            st.info("No tienes préstamos activos.")
+        else:
+            for row in rows:
+                es_prestamista = (row['prestamista_id'] == st.session_state.user_id)
+                rol_txt = "Prestás a" if es_prestamista else "Te presta"
+                contraparte = row['prestatario'] if es_prestamista else row['prestamista']
+                titulo_act = f"{rol_txt} **{contraparte}** — {fmt_gs(row['monto'])}"
+                with st.expander(titulo_act):
+                    ia1, ia2, ia3 = st.columns(3)
+                    ia1.write(f"**Tasa:** {row['tasa_mensual_pct']}% mensual")
+                    ia2.write(f"**Plazo:** {row['plazo_meses']} meses ({row['sistema']})")
+                    ia3.write(f"**Vence:** {row['fecha_vencimiento'] or 'S/D'}")
+                    ib1, ib2 = st.columns(2)
+                    ib1.metric("Cuota mensual", fmt_gs(row['cuota_mensual'] or 0))
+                    ib2.metric("Total a pagar", fmt_gs(row['total_pagar'] or 0))
 
-                for usr in users:
-                    es_self = usr['id'] == st.session_state.user_id
-                    icono = "🛡️" if usr['role'] == 'admin' else "👤"
-                    etiqueta = f"{icono} **{usr['username']}** — `{usr['role']}`"
-                    if es_self:
-                        etiqueta += " *(vos)*"
+                    btn_cols = st.columns(3) if is_admin else st.columns(1)
+                    if btn_cols[0].button("💰 Registrar Pago", key=f"pago_{row['id']}", use_container_width=True, type="primary"):
+                        try:
+                            cur.execute("UPDATE prestamos SET estado = 'pagado' WHERE id = %s", (row['id'],))
+                            conn.commit()
+                            st.success("Pago registrado. El préstamo se movió a 'Cobrado'.")
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Error: {e}")
+                    if is_admin:
+                        if btn_cols[1].button("🗑️ Eliminar", key=f"del_act_{row['id']}", use_container_width=True):
+                            try:
+                                cur.execute("DELETE FROM prestamos WHERE id = %s", (row['id'],))
+                                conn.commit()
+                                st.rerun()
+                            except Exception as e:
+                                conn.rollback()
+                                st.error(f"Error: {e}")
 
-                    with st.expander(etiqueta):
-                        st.write(f"**ID:** {usr['id']}")
-                        st.write(f"**Rol actual:** {usr['role']}")
+        # ---------------- PRÉSTAMOS PAGADOS (historial) ----------------
+        st.divider()
+        st.subheader("✅ Historial de Cobros")
+        cur.execute("""
+            SELECT
+                p.id,
+                u1.username AS prestamista,
+                u2.username AS prestatario,
+                p.prestamista_id,
+                p.monto, p.total_pagar, p.fecha_vencimiento
+            FROM prestamos p
+            JOIN usuarios u1 ON p.prestamista_id = u1.id
+            JOIN usuarios u2 ON p.prestatario_id = u2.id
+            WHERE (p.prestamista_id = %(uid)s OR p.prestatario_id = %(uid)s)
+              AND p.estado = 'pagado'
+            ORDER BY p.fecha_vencimiento DESC NULLS LAST
+        """, {"uid": st.session_state.user_id})
+        pagados = cur.fetchall()
+        if not pagados:
+            st.info("Aun no hay préstamos registrados como pagados.")
+        else:
+            for pag in pagados:
+                es_p = (pag['prestamista_id'] == st.session_state.user_id)
+                lab = ("Cobrado de" if es_p else "Pagado a") + f" **{pag['prestatario'] if es_p else pag['prestamista']}**"
+                with st.expander(f"{lab} — {fmt_gs(pag['total_pagar'] or pag['monto'])}"):
+                    st.write(f"**Capital:** {fmt_gs(pag['monto'])} | **Total pagado:** {fmt_gs(pag['total_pagar'] or pag['monto'])}")
+                    if is_admin:
+                        if st.button("🗑️ Eliminar registro", key=f"del_pag_{pag['id']}", use_container_width=True):
+                            try:
+                                cur.execute("DELETE FROM prestamos WHERE id = %s", (pag['id'],))
+                                conn.commit()
+                                st.rerun()
+                            except Exception as e:
+                                conn.rollback()
+                                st.error(f"Error: {e}")
 
-                        ca, cb, cc = st.columns(3)
+    finally:
+        cur.close()
 
-                        # --- Cambiar rol ---
-                        with ca:
-                            nuevo_rol = st.selectbox(
-                                "Cambiar rol",
-                                ["user", "admin"],
-                                index=(0 if usr['role'] != 'admin' else 1),
-                                key=f"rol_{usr['id']}",
-                                format_func=lambda r: "🛡️ Administrador" if r == "admin" else "👤 Usuario",
+# -----------------------------------------------------
+# PESTAÑA 3: INVERSIONES (GGR + PROYECCIÓN 12 MESES)
+# -----------------------------------------------------
+with menu[2]:
+    st.header("📈 Seguimiento de Inversiones")
+    st.caption("GGR (Gross Growth Rate) mensual equivalente a partir del ROI anual · Proyección de valor a 12 meses")
+
+    conn, cur = get_cursor()
+    try:
+        # -------- KPIs portfolio --------
+        cur.execute("""
+            SELECT
+                COALESCE(SUM(monto),0) AS capital,
+                COALESCE(SUM(monto * roi_esperado / 100.0),0) AS ganancia_anual_esperada,
+                COUNT(*) AS n
+            FROM inversiones WHERE user_id = %s
+        """, (st.session_state.user_id,))
+        t = cur.fetchone() or {}
+        capital_tot = Decimal(str(t['capital'] or 0))
+        gan_anual = Decimal(str(t['ganancia_anual_esperada'] or 0))
+        valor_12m = capital_tot + gan_anual
+        n_activos = t['n'] or 0
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("💼 Capital Invertido", fmt_gs(capital_tot))
+        k2.metric("📈 Ganancia Anual Est.", fmt_gs(gan_anual))
+        k3.metric("🎯 Valor Proyectado 12m", fmt_gs(valor_12m))
+        k4.metric("🧾 Activos", f"{n_activos}")
+
+        st.divider()
+
+        # -------- FORMULARIO REGISTRO --------
+        with st.expander("➕ Registrar Nuevo Activo", expanded=(n_activos == 0)):
+            with st.form("inv_form"):
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    n_inv = st.text_input("Nombre de la Inversión")
+                with c2:
+                    m_inv = st.number_input("Capital Invertido (Gs.)", min_value=0, step=100000)
+                with c3:
+                    roi_inv = st.number_input("ROI Anual Estimado (%)", min_value=0.0, step=0.5, value=10.0)
+                if st.form_submit_button("💾 Registrar", use_container_width=True):
+                    if not n_inv or m_inv <= 0:
+                        st.warning("Completa nombre y monto > 0.")
+                    else:
+                        try:
+                            cur.execute(
+                                "INSERT INTO inversiones (user_id, nombre, monto, roi_esperado, fecha) VALUES (%s, %s, %s, %s, %s)",
+                                (st.session_state.user_id, n_inv, m_inv, roi_inv, datetime.now().date())
                             )
-                            if st.button("🔄 Aplicar rol", key=f"saverol_{usr['id']}", use_container_width=True):
-                                if es_self and nuevo_rol != 'admin':
-                                    st.error("No podés quitarte el rol de admin a vos mismo.")
-                                elif nuevo_rol == usr['role']:
-                                    st.info("El rol no cambió.")
-                                else:
-                                    # Si va a dejar el sistema sin admins, bloqueá.
-                                    if usr['role'] == 'admin' and nuevo_rol != 'admin':
-                                        cur.execute("SELECT COUNT(*) AS n FROM usuarios WHERE role='admin'")
-                                        if (cur.fetchone() or {}).get('n', 0) <= 1:
-                                            st.error("No podés degradar al único administrador.")
-                                        else:
-                                            try:
-                                                cur.execute("UPDATE usuarios SET role=%s WHERE id=%s",
-                                                            (nuevo_rol, usr['id']))
-                                                conn.commit()
-                                                st.success("Rol actualizado.")
-                                                st.rerun()
-                                            except Exception as e:
-                                                conn.rollback()
-                                                st.error(f"Error: {e}")
+                            conn.commit()
+                            st.success("Inversión guardada")
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Error: {e}")
+
+        # -------- TABLA CON GGR Y PROYECCIÓN --------
+        cur.execute(
+            "SELECT id, nombre, monto, roi_esperado, fecha FROM inversiones WHERE user_id = %s ORDER BY fecha DESC",
+            (st.session_state.user_id,)
+        )
+        invs = cur.fetchall()
+
+        if not invs:
+            st.info("Aún no registraste inversiones. Añadí un activo para ver GGR y proyecciones.")
+        else:
+            st.subheader("📊 Portfolio con GGR y Proyección 12 meses")
+            filas = []
+            for r in invs:
+                capital = Decimal(str(r['monto']))
+                roi_anual = Decimal(str(r['roi_esperado'] or 0)) / Decimal("100")
+                # GGR mensual compuesto equivalente: (1+roi_anual)^(1/12) - 1
+                if roi_anual > -1:
+                    ggr_mensual = (Decimal("1") + roi_anual) ** (Decimal("1") / Decimal("12")) - Decimal("1")
+                else:
+                    ggr_mensual = Decimal("0")
+                valor_12 = capital * (Decimal("1") + roi_anual)
+                ganancia = valor_12 - capital
+                filas.append({
+                    "Activo": r['nombre'],
+                    "Capital": fmt_gs(capital),
+                    "ROI Anual": f"{roi_anual*100:.2f}%",
+                    "GGR Mensual": f"{ggr_mensual*100:.3f}%",
+                    "Valor a 12 m.": fmt_gs(valor_12),
+                    "Ganancia": fmt_gs(ganancia),
+                    "Fecha": r['fecha'],
+                })
+            df_inv = pd.DataFrame(filas)
+            st.dataframe(df_inv, use_container_width=True, hide_index=True)
+
+            # -------- GRÁFICO PROYECCIÓN MENSUAL ACUMULADA --------
+            st.subheader("📉 Proyección de valor (12 meses)")
+            meses = list(range(0, 13))
+            fig = go.Figure()
+            for r in invs:
+                capital = float(r['monto'])
+                roi_anual = float(r['roi_esperado'] or 0) / 100.0
+                ggr_m = (1 + roi_anual) ** (1 / 12) - 1
+                valores = [capital * ((1 + ggr_m) ** m) for m in meses]
+                fig.add_trace(go.Scatter(
+                    x=meses, y=valores, mode="lines+markers",
+                    name=r['nombre'],
+                    hovertemplate="Mes %{x}<br>%{y:,.0f} Gs.<extra></extra>",
+                    line=dict(width=3),
+                ))
+            fig.update_layout(
+                xaxis_title="Mes", yaxis_title="Valor proyectado (Gs.)",
+                height=420, margin=dict(l=10, r=10, t=10, b=10),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(family="Inter", color="#FFFFFF"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                            font=dict(color="#FFFFFF")),
+                hovermode="x unified",
+            )
+            fig.update_xaxes(showgrid=True, gridcolor="#2A2A2A", color="#FFFFFF")
+            fig.update_yaxes(showgrid=True, gridcolor="#2A2A2A", color="#FFFFFF", tickformat=",.0f")
+            st.plotly_chart(fig, use_container_width=True)
+    finally:
+        cur.close()
+
+# -----------------------------------------------------
+# PESTAÑA 4: AHORROS (DASHBOARD + APORTE PERSONALIZADO)
+# -----------------------------------------------------
+with menu[3]:
+    st.header("🎯 Metas de Ahorro")
+
+    conn, cur = get_cursor()
+    try:
+        # -------- KPIs globales --------
+        cur.execute("""
+            SELECT COALESCE(SUM(actual),0) AS ahorrado,
+                   COALESCE(SUM(objetivo),0) AS objetivo,
+                   COUNT(*) AS n
+            FROM ahorros WHERE user_id = %s
+        """, (st.session_state.user_id,))
+        t = cur.fetchone() or {}
+        ahorrado = Decimal(str(t['ahorrado'] or 0))
+        objetivo = Decimal(str(t['objetivo'] or 0))
+        faltante = max(objetivo - ahorrado, Decimal("0"))
+        pct_global = float(ahorrado / objetivo) if objetivo > 0 else 0.0
+        pct_global = min(pct_global, 1.0)
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("💰 Ahorrado Total", fmt_gs(ahorrado))
+        k2.metric("🏁 Objetivo Total", fmt_gs(objetivo))
+        k3.metric("📉 Falta", fmt_gs(faltante))
+        k4.metric("📊 Progreso Global", f"{pct_global*100:.1f}%")
+
+        st.markdown("**Progreso general**")
+        st.progress(pct_global)
+
+        st.divider()
+
+        # -------- CREAR NUEVA META --------
+        with st.expander("🎯 Crear Nueva Meta"):
+            with st.form("ah_form"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    n_meta = st.text_input("¿Para qué estás ahorrando?")
+                with c2:
+                    obj_meta = st.number_input("Objetivo Final (Gs.)", min_value=0, step=100000)
+                if st.form_submit_button("Crear Meta", use_container_width=True):
+                    if not n_meta or obj_meta <= 0:
+                        st.warning("Completa nombre y objetivo > 0.")
+                    else:
+                        try:
+                            cur.execute(
+                                "INSERT INTO ahorros (user_id, meta_nombre, objetivo) VALUES (%s, %s, %s)",
+                                (st.session_state.user_id, n_meta, obj_meta)
+                            )
+                            conn.commit()
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Error: {e}")
+
+        # -------- LISTA DE METAS --------
+        cur.execute(
+            "SELECT id, meta_nombre, objetivo, actual FROM ahorros WHERE user_id = %s ORDER BY id",
+            (st.session_state.user_id,)
+        )
+        metas = cur.fetchall()
+
+        if not metas:
+            st.info("🗒️ Todavía no creaste metas de ahorro. Empezá creando la primera arriba.")
+        else:
+            for m in metas:
+                objetivo_m = float(m['objetivo']) if m['objetivo'] else 0
+                actual_m = float(m['actual']) if m['actual'] else 0
+                porcentaje = (actual_m / objetivo_m) if objetivo_m > 0 else 0
+                porcentaje_c = min(porcentaje, 1.0)
+                completo = porcentaje >= 1.0
+
+                st.markdown(f"### {'🏆 ' if completo else '🎯 '}{m['meta_nombre']}")
+                c_inf, c_bar = st.columns([1, 3])
+                with c_inf:
+                    st.metric("Progreso", f"{porcentaje*100:.1f}%")
+                with c_bar:
+                    st.write(f"**{fmt_gs(actual_m)}** / {fmt_gs(objetivo_m)}  ·  falta **{fmt_gs(max(objetivo_m-actual_m,0))}**")
+                    st.progress(porcentaje_c)
+
+                # ---- Aportar ----
+                c_qa, c_qb, c_qc, c_custom = st.columns([1, 1, 1, 2])
+                aportes_rapidos = [50000, 100000, 500000]
+                for idx, apq in enumerate(aportes_rapidos):
+                    col_ref = [c_qa, c_qb, c_qc][idx]
+                    if col_ref.button(f"+ {fmt_gs(apq)}", key=f"q{apq}_{m['id']}", use_container_width=True):
+                        try:
+                            cur.execute(
+                                "UPDATE ahorros SET actual = actual + %s WHERE id = %s AND user_id = %s",
+                                (apq, m['id'], st.session_state.user_id)
+                            )
+                            conn.commit()
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Error: {e}")
+
+                with c_custom:
+                    with st.form(f"aporte_custom_{m['id']}", clear_on_submit=True):
+                        cc1, cc2 = st.columns([2, 1])
+                        with cc1:
+                            monto_custom = st.number_input(
+                                "Aporte personalizado (Gs.)",
+                                min_value=0, step=10000, key=f"mc_{m['id']}"
+                            )
+                        with cc2:
+                            st.write(""); st.write("")
+                            enviar = st.form_submit_button("💵 Aportar", use_container_width=True)
+                        if enviar:
+                            if monto_custom <= 0:
+                                st.warning("Ingresá un monto > 0.")
+                            else:
+                                try:
+                                    cur.execute(
+                                        "UPDATE ahorros SET actual = actual + %s WHERE id = %s AND user_id = %s",
+                                        (monto_custom, m['id'], st.session_state.user_id)
+                                    )
+                                    conn.commit()
+                                    st.success(f"Aporte de {fmt_gs(monto_custom)} registrado.")
+                                    st.rerun()
+                                except Exception as e:
+                                    conn.rollback()
+                                    st.error(f"Error: {e}")
+
+                st.divider()
+    finally:
+        cur.close()
+
+# -----------------------------------------------------
+# PESTAÑA 5: USUARIOS (SÓLO ADMIN)
+# -----------------------------------------------------
+if is_admin:
+    with menu[4]:
+        st.header("👥 Gestión de Usuarios")
+        st.caption("Panel de administración · Sólo los administradores pueden crear, editar o eliminar usuarios.")
+
+        conn, cur = get_cursor()
+        try:
+            # -------- KPIs --------
+            cur.execute("""
+                SELECT
+                    COUNT(*) AS total,
+                    COUNT(*) FILTER (WHERE role='admin') AS admins,
+                    COUNT(*) FILTER (WHERE role='user' OR role IS NULL) AS users
+                FROM usuarios
+            """)
+            stats = cur.fetchone() or {}
+            k1, k2, k3 = st.columns(3)
+            k1.metric("👥 Total Usuarios", stats.get('total', 0) or 0)
+            k2.metric("🛡️ Administradores", stats.get('admins', 0) or 0)
+            k3.metric("👤 Usuarios Estándar", stats.get('users', 0) or 0)
+
+            st.divider()
+
+            # -------- CREAR NUEVO USUARIO --------
+            with st.expander("➕ Crear Nuevo Usuario", expanded=False):
+                with st.form("create_user_form", clear_on_submit=True):
+                    cu1, cu2 = st.columns(2)
+                    with cu1:
+                        new_username = st.text_input("Nombre de usuario", key="adm_new_u")
+                        new_role = st.selectbox(
+                            "Rol", ["user", "admin"],
+                            format_func=lambda r: "🛡️ Administrador" if r == "admin" else "👤 Usuario",
+                            key="adm_new_r"
+                        )
+                    with cu2:
+                        new_password = st.text_input("Contraseña", type="password", key="adm_new_p")
+                        new_password2 = st.text_input("Confirmar contraseña", type="password", key="adm_new_p2")
+
+                    submitted = st.form_submit_button("✅ Crear Usuario", use_container_width=True)
+                    if submitted:
+                        if not new_username or not new_password:
+                            st.warning("Completá usuario y contraseña.")
+                        elif len(new_password) < 6:
+                            st.warning("La contraseña debe tener al menos 6 caracteres.")
+                        elif new_password != new_password2:
+                            st.error("Las contraseñas no coinciden.")
+                        else:
+                            try:
+                                hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+                                cur.execute(
+                                    "INSERT INTO usuarios (username, password, role) VALUES (%s, %s, %s)",
+                                    (new_username.strip(), hashed, new_role)
+                                )
+                                conn.commit()
+                                st.success(f"✅ Usuario '{new_username}' creado como {new_role}.")
+                                st.rerun()
+                            except psycopg2.errors.UniqueViolation:
+                                conn.rollback()
+                                st.error("❌ Ese nombre de usuario ya existe.")
+                            except Exception as e:
+                                conn.rollback()
+                                st.error(f"Error: {e}")
+
+            # -------- LISTA DE USUARIOS --------
+            st.subheader("📋 Lista de Usuarios")
+            cur.execute("""
+                SELECT id, username, COALESCE(role,'user') AS role
+                FROM usuarios
+                ORDER BY (role = 'admin') DESC, username ASC
+            """)
+            users = cur.fetchall()
+
+            for usr in users:
+                es_self = usr['id'] == st.session_state.user_id
+                icono = "🛡️" if usr['role'] == 'admin' else "👤"
+                etiqueta = f"{icono} **{usr['username']}** — `{usr['role']}`"
+                if es_self:
+                    etiqueta += " *(vos)*"
+
+                with st.expander(etiqueta):
+                    st.write(f"**ID:** {usr['id']}")
+                    st.write(f"**Rol actual:** {usr['role']}")
+
+                    ca, cb, cc = st.columns(3)
+
+                    # --- Cambiar rol ---
+                    with ca:
+                        nuevo_rol = st.selectbox(
+                            "Cambiar rol",
+                            ["user", "admin"],
+                            index=(0 if usr['role'] != 'admin' else 1),
+                            key=f"rol_{usr['id']}",
+                            format_func=lambda r: "🛡️ Administrador" if r == "admin" else "👤 Usuario",
+                        )
+                        if st.button("🔄 Aplicar rol", key=f"saverol_{usr['id']}", use_container_width=True):
+                            if es_self and nuevo_rol != 'admin':
+                                st.error("No podés quitarte el rol de admin a vos mismo.")
+                            elif nuevo_rol == usr['role']:
+                                st.info("El rol no cambió.")
+                            else:
+                                # Si va a dejar el sistema sin admins, bloqueá.
+                                if usr['role'] == 'admin' and nuevo_rol != 'admin':
+                                    cur.execute("SELECT COUNT(*) AS n FROM usuarios WHERE role='admin'")
+                                    if (cur.fetchone() or {}).get('n', 0) <= 1:
+                                        st.error("No podés degradar al único administrador.")
                                     else:
                                         try:
                                             cur.execute("UPDATE usuarios SET role=%s WHERE id=%s",
@@ -1593,228 +1587,238 @@ else:
                                         except Exception as e:
                                             conn.rollback()
                                             st.error(f"Error: {e}")
-
-                        # --- Resetear contraseña ---
-                        with cb:
-                            with st.form(f"reset_pwd_{usr['id']}", clear_on_submit=True):
-                                new_pwd = st.text_input(
-                                    "Nueva contraseña", type="password",
-                                    key=f"np_{usr['id']}"
-                                )
-                                if st.form_submit_button("🔑 Resetear", use_container_width=True):
-                                    if not new_pwd or len(new_pwd) < 6:
-                                        st.warning("Mínimo 6 caracteres.")
-                                    else:
-                                        try:
-                                            hashed = bcrypt.hashpw(new_pwd.encode(), bcrypt.gensalt()).decode()
-                                            cur.execute("UPDATE usuarios SET password=%s WHERE id=%s",
-                                                        (hashed, usr['id']))
-                                            conn.commit()
-                                            st.success("Contraseña actualizada.")
-                                        except Exception as e:
-                                            conn.rollback()
-                                            st.error(f"Error: {e}")
-
-                        # --- Eliminar ---
-                        with cc:
-                            st.write(""); st.write("")
-                            if es_self:
-                                st.caption("No podés eliminarte a vos mismo.")
-                            else:
-                                confirmar = st.checkbox(
-                                    f"Confirmar eliminar a {usr['username']}",
-                                    key=f"delchk_{usr['id']}"
-                                )
-                                if st.button("🗑️ Eliminar", key=f"del_{usr['id']}", use_container_width=True):
-                                    if not confirmar:
-                                        st.warning("Marcá la casilla de confirmación primero.")
-                                    else:
-                                        # No permitir dejar sistema sin admins
-                                        if usr['role'] == 'admin':
-                                            cur.execute("SELECT COUNT(*) AS n FROM usuarios WHERE role='admin'")
-                                            if (cur.fetchone() or {}).get('n', 0) <= 1:
-                                                st.error("No podés eliminar al único administrador.")
-                                                st.stop()
-                                        try:
-                                            # Chequear si tiene datos asociados
-                                            cur.execute("""
-                                                SELECT
-                                                  (SELECT COUNT(*) FROM movimientos WHERE user_id=%(id)s) AS m,
-                                                  (SELECT COUNT(*) FROM inversiones WHERE user_id=%(id)s) AS i,
-                                                  (SELECT COUNT(*) FROM ahorros WHERE user_id=%(id)s) AS a,
-                                                  (SELECT COUNT(*) FROM prestamos
-                                                    WHERE prestamista_id=%(id)s OR prestatario_id=%(id)s) AS p
-                                            """, {"id": usr['id']})
-                                            deps = cur.fetchone() or {}
-                                            total_deps = sum([deps.get(k, 0) or 0 for k in ('m','i','a','p')])
-                                            if total_deps > 0:
-                                                st.error(
-                                                    f"El usuario tiene {total_deps} registros asociados "
-                                                    f"(movimientos/préstamos/etc). Eliminá primero sus datos."
-                                                )
-                                            else:
-                                                cur.execute("DELETE FROM usuarios WHERE id=%s", (usr['id'],))
-                                                conn.commit()
-                                                st.success(f"Usuario '{usr['username']}' eliminado.")
-                                                st.rerun()
-                                        except Exception as e:
-                                            conn.rollback()
-                                            st.error(f"Error: {e}")
-            # -------- GESTION DE PRESTAMOS (ADMIN) --------
-                st.divider()
-                st.subheader("🤝 Gestión Global de Préstamos")
-                st.caption("Vista de todos los préstamos del sistema · Solo administradores")
-
-                estados_filtro = st.multiselect(
-                    "Filtrar por estado",
-                    ["pendiente", "aprobado", "rechazado", "pagado"],
-                    default=["pendiente", "aprobado"],
-                    key="adm_est_filtro"
-                )
-                if estados_filtro:
-                    placeholders = ",".join(["%s"] * len(estados_filtro))
-                    cur.execute(f"""
-                        SELECT
-                            p.id,
-                            u1.username AS prestamista,
-                            u2.username AS prestatario,
-                            p.monto, p.interes, p.plazo_meses, p.sistema,
-                            p.cuota_mensual, p.total_pagar,
-                            p.estado, p.fecha_creacion, p.fecha_vencimiento
-                        FROM prestamos p
-                        JOIN usuarios u1 ON p.prestamista_id = u1.id
-                        JOIN usuarios u2 ON p.prestatario_id = u2.id
-                        WHERE p.estado IN ({placeholders})
-                        ORDER BY p.fecha_creacion DESC
-                    """, tuple(estados_filtro))
-                    todos = cur.fetchall()
-                    if not todos:
-                        st.info("No hay préstamos con esos estados.")
-                    else:
-                        for pr in todos:
-                            color_badge = {"aprobado": "🟢", "pendiente": "🟡", "pagado": "✅", "rechazado": "🔴"}.get(pr['estado'], "⚪")
-                            with st.expander(f"{color_badge} #{pr['id']} — {pr['prestamista']} → {pr['prestatario']} | {fmt_gs(pr['monto'])} | {pr['estado'].upper()}"):
-                                gc1, gc2, gc3 = st.columns(3)
-                                gc1.write(f"**Tasa:** {pr['interes']}% | **Plazo:** {pr['plazo_meses']} m | **Sistema:** {pr['sistema']}")
-                                gc2.write(f"**Cuota:** {fmt_gs(pr['cuota_mensual'] or 0)} | **Total:** {fmt_gs(pr['total_pagar'] or 0)}")
-                                gc3.write(f"**Creado:** {str(pr['fecha_creacion'])[:10]} | **Vence:** {pr['fecha_vencimiento'] or 'S/D'}")
-
-                                gb1, gb2, gb3 = st.columns(3)
-                                if pr['estado'] == 'aprobado':
-                                    if gb1.button("💰 Marcar Pagado", key=f"adm_pago_{pr['id']}", use_container_width=True, type="primary"):
-                                        try:
-                                            cur.execute("UPDATE prestamos SET estado='pagado' WHERE id=%s", (pr['id'],))
-                                            conn.commit(); st.rerun()
-                                        except Exception as e:
-                                            conn.rollback(); st.error(f"Error: {e}")
-                                if pr['estado'] == 'pendiente':
-                                    if gb1.button("✅ Aprobar", key=f"adm_apr_{pr['id']}", use_container_width=True):
-                                        try:
-                                            cur.execute("UPDATE prestamos SET estado='aprobado' WHERE id=%s", (pr['id'],))
-                                            conn.commit(); st.rerun()
-                                        except Exception as e:
-                                            conn.rollback(); st.error(f"Error: {e}")
-                                    if gb2.button("❌ Rechazar", key=f"adm_rech_{pr['id']}", use_container_width=True):
-                                        try:
-                                            cur.execute("UPDATE prestamos SET estado='rechazado' WHERE id=%s", (pr['id'],))
-                                            conn.commit(); st.rerun()
-                                        except Exception as e:
-                                            conn.rollback(); st.error(f"Error: {e}")
-                                if gb3.button("🗑️ Eliminar", key=f"adm_del_{pr['id']}", use_container_width=True):
+                                else:
                                     try:
-                                        cur.execute("DELETE FROM prestamos WHERE id=%s", (pr['id'],))
+                                        cur.execute("UPDATE usuarios SET role=%s WHERE id=%s",
+                                                    (nuevo_rol, usr['id']))
+                                        conn.commit()
+                                        st.success("Rol actualizado.")
+                                        st.rerun()
+                                    except Exception as e:
+                                        conn.rollback()
+                                        st.error(f"Error: {e}")
+
+                    # --- Resetear contraseña ---
+                    with cb:
+                        with st.form(f"reset_pwd_{usr['id']}", clear_on_submit=True):
+                            new_pwd = st.text_input(
+                                "Nueva contraseña", type="password",
+                                key=f"np_{usr['id']}"
+                            )
+                            if st.form_submit_button("🔑 Resetear", use_container_width=True):
+                                if not new_pwd or len(new_pwd) < 6:
+                                    st.warning("Mínimo 6 caracteres.")
+                                else:
+                                    try:
+                                        hashed = bcrypt.hashpw(new_pwd.encode(), bcrypt.gensalt()).decode()
+                                        cur.execute("UPDATE usuarios SET password=%s WHERE id=%s",
+                                                    (hashed, usr['id']))
+                                        conn.commit()
+                                        st.success("Contraseña actualizada.")
+                                    except Exception as e:
+                                        conn.rollback()
+                                        st.error(f"Error: {e}")
+
+                    # --- Eliminar ---
+                    with cc:
+                        st.write(""); st.write("")
+                        if es_self:
+                            st.caption("No podés eliminarte a vos mismo.")
+                        else:
+                            confirmar = st.checkbox(
+                                f"Confirmar eliminar a {usr['username']}",
+                                key=f"delchk_{usr['id']}"
+                            )
+                            if st.button("🗑️ Eliminar", key=f"del_{usr['id']}", use_container_width=True):
+                                if not confirmar:
+                                    st.warning("Marcá la casilla de confirmación primero.")
+                                else:
+                                    # No permitir dejar sistema sin admins
+                                    if usr['role'] == 'admin':
+                                        cur.execute("SELECT COUNT(*) AS n FROM usuarios WHERE role='admin'")
+                                        if (cur.fetchone() or {}).get('n', 0) <= 1:
+                                            st.error("No podés eliminar al único administrador.")
+                                            st.stop()
+                                    try:
+                                        # Chequear si tiene datos asociados
+                                        cur.execute("""
+                                            SELECT
+                                              (SELECT COUNT(*) FROM movimientos WHERE user_id=%(id)s) AS m,
+                                              (SELECT COUNT(*) FROM inversiones WHERE user_id=%(id)s) AS i,
+                                              (SELECT COUNT(*) FROM ahorros WHERE user_id=%(id)s) AS a,
+                                              (SELECT COUNT(*) FROM prestamos
+                                                WHERE prestamista_id=%(id)s OR prestatario_id=%(id)s) AS p
+                                        """, {"id": usr['id']})
+                                        deps = cur.fetchone() or {}
+                                        total_deps = sum([deps.get(k, 0) or 0 for k in ('m','i','a','p')])
+                                        if total_deps > 0:
+                                            st.error(
+                                                f"El usuario tiene {total_deps} registros asociados "
+                                                f"(movimientos/préstamos/etc). Eliminá primero sus datos."
+                                            )
+                                        else:
+                                            cur.execute("DELETE FROM usuarios WHERE id=%s", (usr['id'],))
+                                            conn.commit()
+                                            st.success(f"Usuario '{usr['username']}' eliminado.")
+                                            st.rerun()
+                                    except Exception as e:
+                                        conn.rollback()
+                                        st.error(f"Error: {e}")
+        # -------- GESTION DE PRESTAMOS (ADMIN) --------
+            st.divider()
+            st.subheader("🤝 Gestión Global de Préstamos")
+            st.caption("Vista de todos los préstamos del sistema · Solo administradores")
+
+            estados_filtro = st.multiselect(
+                "Filtrar por estado",
+                ["pendiente", "aprobado", "rechazado", "pagado"],
+                default=["pendiente", "aprobado"],
+                key="adm_est_filtro"
+            )
+            if estados_filtro:
+                placeholders = ",".join(["%s"] * len(estados_filtro))
+                cur.execute(f"""
+                    SELECT
+                        p.id,
+                        u1.username AS prestamista,
+                        u2.username AS prestatario,
+                        p.monto, p.interes, p.plazo_meses, p.sistema,
+                        p.cuota_mensual, p.total_pagar,
+                        p.estado, p.fecha_creacion, p.fecha_vencimiento
+                    FROM prestamos p
+                    JOIN usuarios u1 ON p.prestamista_id = u1.id
+                    JOIN usuarios u2 ON p.prestatario_id = u2.id
+                    WHERE p.estado IN ({placeholders})
+                    ORDER BY p.fecha_creacion DESC
+                """, tuple(estados_filtro))
+                todos = cur.fetchall()
+                if not todos:
+                    st.info("No hay préstamos con esos estados.")
+                else:
+                    for pr in todos:
+                        color_badge = {"aprobado": "🟢", "pendiente": "🟡", "pagado": "✅", "rechazado": "🔴"}.get(pr['estado'], "⚪")
+                        with st.expander(f"{color_badge} #{pr['id']} — {pr['prestamista']} → {pr['prestatario']} | {fmt_gs(pr['monto'])} | {pr['estado'].upper()}"):
+                            gc1, gc2, gc3 = st.columns(3)
+                            gc1.write(f"**Tasa:** {pr['interes']}% | **Plazo:** {pr['plazo_meses']} m | **Sistema:** {pr['sistema']}")
+                            gc2.write(f"**Cuota:** {fmt_gs(pr['cuota_mensual'] or 0)} | **Total:** {fmt_gs(pr['total_pagar'] or 0)}")
+                            gc3.write(f"**Creado:** {str(pr['fecha_creacion'])[:10]} | **Vence:** {pr['fecha_vencimiento'] or 'S/D'}")
+
+                            gb1, gb2, gb3 = st.columns(3)
+                            if pr['estado'] == 'aprobado':
+                                if gb1.button("💰 Marcar Pagado", key=f"adm_pago_{pr['id']}", use_container_width=True, type="primary"):
+                                    try:
+                                        cur.execute("UPDATE prestamos SET estado='pagado' WHERE id=%s", (pr['id'],))
                                         conn.commit(); st.rerun()
                                     except Exception as e:
                                         conn.rollback(); st.error(f"Error: {e}")
-                else:
-                    st.info("Selecciona al menos un estado en el filtro.")
-
-            # -------- GASTOS ADMINISTRATIVOS --------
-                st.divider()
-                st.subheader("🏢 Gastos Administrativos")
-                st.caption("Registra costos operativos del negocio. Se descuentan del Balance Neto global.")
-
-                CATS_GASTO = ["Papelería/Impresiones", "Comisiones Bancarias",
-                              "Movilidad", "Honorarios", "Servicios TI", "Otros"]
-
-                with st.expander("➕ Registrar Gasto", expanded=False):
-                    with st.form("form_gasto", clear_on_submit=True):
-                        fg1, fg2, fg3 = st.columns(3)
-                        with fg1:
-                            g_cat   = st.selectbox("Categoría", CATS_GASTO, key="g_cat")
-                            g_fecha = st.date_input("Fecha", datetime.now(), key="g_fecha")
-                        with fg2:
-                            g_monto = st.number_input("Monto (Gs.)", min_value=0, step=5000, key="g_monto")
-                        with fg3:
-                            g_desc = st.text_input("Descripción", key="g_desc")
-                            st.write(""); st.write("")
-                        if st.form_submit_button("💾 Guardar Gasto", use_container_width=True):
-                            if g_monto <= 0:
-                                st.warning("El monto debe ser mayor a 0.")
-                            else:
+                            if pr['estado'] == 'pendiente':
+                                if gb1.button("✅ Aprobar", key=f"adm_apr_{pr['id']}", use_container_width=True):
+                                    try:
+                                        cur.execute("UPDATE prestamos SET estado='aprobado' WHERE id=%s", (pr['id'],))
+                                        conn.commit(); st.rerun()
+                                    except Exception as e:
+                                        conn.rollback(); st.error(f"Error: {e}")
+                                if gb2.button("❌ Rechazar", key=f"adm_rech_{pr['id']}", use_container_width=True):
+                                    try:
+                                        cur.execute("UPDATE prestamos SET estado='rechazado' WHERE id=%s", (pr['id'],))
+                                        conn.commit(); st.rerun()
+                                    except Exception as e:
+                                        conn.rollback(); st.error(f"Error: {e}")
+                            if gb3.button("🗑️ Eliminar", key=f"adm_del_{pr['id']}", use_container_width=True):
                                 try:
-                                    cur.execute(
-                                        "INSERT INTO gastos (fecha, categoria, monto, descripcion) VALUES (%s,%s,%s,%s)",
-                                        (g_fecha, g_cat, int(g_monto), g_desc)
-                                    )
-                                    conn.commit()
-                                    st.success(f"Gasto de {fmt_gs(g_monto)} registrado.")
-                                    st.rerun()
+                                    cur.execute("DELETE FROM prestamos WHERE id=%s", (pr['id'],))
+                                    conn.commit(); st.rerun()
                                 except Exception as e:
-                                    conn.rollback()
-                                    st.error(f"Error: {e}")
+                                    conn.rollback(); st.error(f"Error: {e}")
+            else:
+                st.info("Selecciona al menos un estado en el filtro.")
 
-                # Tabla últimos 10 gastos
-                cur.execute("""
-                    SELECT id, fecha, categoria, monto, descripcion
-                    FROM gastos ORDER BY fecha DESC, id DESC LIMIT 10
-                """)
-                ultimos_g = cur.fetchall()
-                if ultimos_g:
-                    df_g = pd.DataFrame([dict(r) for r in ultimos_g])
-                    df_g["monto"] = df_g["monto"].apply(fmt_gs)
-                    st.dataframe(df_g, use_container_width=True, hide_index=True)
+        # -------- GASTOS ADMINISTRATIVOS --------
+            st.divider()
+            st.subheader("🏢 Gastos Administrativos")
+            st.caption("Registra costos operativos del negocio. Se descuentan del Balance Neto global.")
 
-                    # KPI rápido de totales por categoría
-                    cur.execute("SELECT categoria, SUM(monto) AS total FROM gastos GROUP BY categoria ORDER BY total DESC")
-                    cats_g = cur.fetchall()
-                    if cats_g:
-                        st.subheader("📊 Gastos por categoría")
-                        df_cats_g = pd.DataFrame([dict(r) for r in cats_g])
-                        df_cats_g["total"] = df_cats_g["total"].astype(float)
-                        fig_g = px.bar(
-                            df_cats_g, x="categoria", y="total",
-                            color_discrete_sequence=["#FF6B6B"],
-                            labels={"categoria": "", "total": "Gs."},
-                        )
-                        fig_g.update_layout(
-                            height=280,
-                            margin=dict(l=10, r=10, t=10, b=10),
-                            paper_bgcolor="rgba(0,0,0,0)",
-                            plot_bgcolor="rgba(0,0,0,0)",
-                            font=dict(family="Inter", color="#FFFFFF"),
-                        )
-                        fig_g.update_xaxes(showgrid=False, color="#FFFFFF")
-                        fig_g.update_yaxes(showgrid=True, gridcolor="#1E1E1E", color="#FFFFFF", tickformat=",.0f")
-                        st.plotly_chart(fig_g, use_container_width=True)
+            CATS_GASTO = ["Papelería/Impresiones", "Comisiones Bancarias",
+                          "Movilidad", "Honorarios", "Servicios TI", "Otros"]
 
-                    # Botones de borrado por gasto
-                    st.subheader("🗑️ Eliminar gastos")
-                    for g in ultimos_g:
-                        col_label, col_btn = st.columns([4, 1])
-                        col_label.write(f"{g['fecha']} | {g['categoria']} | {fmt_gs(g['monto'])} | {g['descripcion'] or '—'}")
-                        if col_btn.button("Eliminar", key=f"del_g_{g['id']}", use_container_width=True):
+            with st.expander("➕ Registrar Gasto", expanded=False):
+                with st.form("form_gasto", clear_on_submit=True):
+                    fg1, fg2, fg3 = st.columns(3)
+                    with fg1:
+                        g_cat   = st.selectbox("Categoría", CATS_GASTO, key="g_cat")
+                        g_fecha = st.date_input("Fecha", datetime.now(), key="g_fecha")
+                    with fg2:
+                        g_monto = st.number_input("Monto (Gs.)", min_value=0, step=5000, key="g_monto")
+                    with fg3:
+                        g_desc = st.text_input("Descripción", key="g_desc")
+                        st.write(""); st.write("")
+                    if st.form_submit_button("💾 Guardar Gasto", use_container_width=True):
+                        if g_monto <= 0:
+                            st.warning("El monto debe ser mayor a 0.")
+                        else:
                             try:
-                                cur.execute("DELETE FROM gastos WHERE id = %s", (g['id'],))
+                                cur.execute(
+                                    "INSERT INTO gastos (fecha, categoria, monto, descripcion) VALUES (%s,%s,%s,%s)",
+                                    (g_fecha, g_cat, int(g_monto), g_desc)
+                                )
                                 conn.commit()
+                                st.success(f"Gasto de {fmt_gs(g_monto)} registrado.")
                                 st.rerun()
                             except Exception as e:
                                 conn.rollback()
                                 st.error(f"Error: {e}")
-                else:
-                    st.info("Aún no hay gastos registrados.")
 
-            finally:
-                cur.close()
+            # Tabla últimos 10 gastos
+            cur.execute("""
+                SELECT id, fecha, categoria, monto, descripcion
+                FROM gastos ORDER BY fecha DESC, id DESC LIMIT 10
+            """)
+            ultimos_g = cur.fetchall()
+            if ultimos_g:
+                df_g = pd.DataFrame([dict(r) for r in ultimos_g])
+                df_g["monto"] = df_g["monto"].apply(fmt_gs)
+                st.dataframe(df_g, use_container_width=True, hide_index=True)
+
+                # KPI rápido de totales por categoría
+                cur.execute("SELECT categoria, SUM(monto) AS total FROM gastos GROUP BY categoria ORDER BY total DESC")
+                cats_g = cur.fetchall()
+                if cats_g:
+                    st.subheader("📊 Gastos por categoría")
+                    df_cats_g = pd.DataFrame([dict(r) for r in cats_g])
+                    df_cats_g["total"] = df_cats_g["total"].astype(float)
+                    fig_g = px.bar(
+                        df_cats_g, x="categoria", y="total",
+                        color_discrete_sequence=["#FF6B6B"],
+                        labels={"categoria": "", "total": "Gs."},
+                    )
+                    fig_g.update_layout(
+                        height=280,
+                        margin=dict(l=10, r=10, t=10, b=10),
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font=dict(family="Inter", color="#FFFFFF"),
+                    )
+                    fig_g.update_xaxes(showgrid=False, color="#FFFFFF")
+                    fig_g.update_yaxes(showgrid=True, gridcolor="#1E1E1E", color="#FFFFFF", tickformat=",.0f")
+                    st.plotly_chart(fig_g, use_container_width=True)
+
+                # Botones de borrado por gasto
+                st.subheader("🗑️ Eliminar gastos")
+                for g in ultimos_g:
+                    col_label, col_btn = st.columns([4, 1])
+                    col_label.write(f"{g['fecha']} | {g['categoria']} | {fmt_gs(g['monto'])} | {g['descripcion'] or '—'}")
+                    if col_btn.button("Eliminar", key=f"del_g_{g['id']}", use_container_width=True):
+                        try:
+                            cur.execute("DELETE FROM gastos WHERE id = %s", (g['id'],))
+                            conn.commit()
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Error: {e}")
+            else:
+                st.info("Aún no hay gastos registrados.")
+
+        finally:
+            cur.close()
 
 
