@@ -521,22 +521,14 @@ st.markdown("""
 </script>
 """, unsafe_allow_html=True)
 
-# Cookie manager — debe instanciarse antes de cualquier lógica de sesión.
-# Renderiza un micro-componente oculto que lee las cookies del navegador.
+# Cookie manager — se instancia temprano para que el componente empiece
+# a leer las cookies del navegador desde el primer ciclo de render.
 _cookie_mgr = stx.CookieManager(key="fpro_cm_v1")
-
-# F5 FIX: el CookieManager necesita un ciclo de render para leer las
-# cookies del navegador. Si es la primera ejecucion de esta sesion,
-# forzamos un rerun inmediato para que el segundo ciclo ya tenga cookies.
-if "_cookies_ready" not in st.session_state:
-    st.session_state._cookies_ready = True
-    st.rerun()
 
 # =========================================================
 # HELPERS DE SESIÓN PERSISTENTE
 # =========================================================
 def _crear_token(user_id: int) -> str:
-    """Genera UUID, lo persiste en DB y retorna el valor para guardar en cookie."""
     token   = str(uuid.uuid4())
     expires = datetime.now() + timedelta(days=7)
     conn, cur = get_cursor()
@@ -556,7 +548,6 @@ def _crear_token(user_id: int) -> str:
     return token
 
 def _validar_token(token: str) -> dict | None:
-    """Valida el token contra la DB. Retorna datos del usuario o None si es inválido/expirado."""
     if not token:
         return None
     conn, cur = get_cursor()
@@ -575,7 +566,6 @@ def _validar_token(token: str) -> dict | None:
         cur.close()
 
 def _revocar_token(token: str):
-    """Elimina el token de la DB al cerrar sesión."""
     if not token:
         return
     conn, cur = get_cursor()
@@ -586,22 +576,64 @@ def _revocar_token(token: str):
         finally:
             cur.close()
 
-# ---- Inicializar estado ----
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
+# ---- Overlay de carga: cubre TODA la pantalla mientras se verifica la sesion.
+# position:fixed + z-index alto garantiza que ningun elemento de Streamlit
+# sea visible durante el chequeo, eliminando el parpadeo del formulario de login.
+_LOADING_OVERLAY = """
+<div id="auth-overlay" style="
+  position:fixed;top:0;left:0;width:100vw;height:100vh;
+  background:#000000;z-index:99999;
+  display:flex;align-items:center;justify-content:center;
+  flex-direction:column;gap:1.2rem;">
+  <div style="
+    width:52px;height:52px;
+    border:4px solid #1E88E5;
+    border-top-color:transparent;
+    border-radius:50%;
+    animation:_aspin .75s linear infinite;">
+  </div>
+  <span style="color:#9BA3AF;font-family:Inter,sans-serif;
+               font-size:.9rem;letter-spacing:.4px;">
+    Verificando sesión...
+  </span>
+</div>
+<style>@keyframes _aspin{to{transform:rotate(360deg)}}</style>
+"""
 
-# ---- Auto-login por cookie (se ejecuta en cada recarga) ----
+# ---- Inicializar estado ----
+if "logged_in"     not in st.session_state: st.session_state.logged_in     = False
+if "_auth_attempt" not in st.session_state: st.session_state._auth_attempt = 0
+
+_MAX_ATTEMPTS = 4   # ciclos máximos esperando a que CookieManager cargue
+
+# ---- Auto-login sin parpadeo: overlay negro + reintentos ----
 if not st.session_state.logged_in:
     _saved_token = _cookie_mgr.get("session_pro_py")
+
     if _saved_token:
+        # Cookie encontrada — validar contra BD
         _user_data = _validar_token(_saved_token)
         if _user_data:
-            st.session_state.logged_in            = True
-            st.session_state.user_id              = _user_data["id"]
-            st.session_state.username             = _user_data["username"]
-            st.session_state.role                 = _user_data["role"]
-            st.session_state["_session_token"]    = _saved_token
+            st.session_state.logged_in         = True
+            st.session_state.user_id           = _user_data["id"]
+            st.session_state.username          = _user_data["username"]
+            st.session_state.role              = _user_data["role"]
+            st.session_state["_session_token"] = _saved_token
+            st.session_state._auth_attempt     = 0
             st.rerun()
+        # Token inválido o expirado — resetear y caer al login
+        st.session_state._auth_attempt = 0
+
+    elif st.session_state._auth_attempt < _MAX_ATTEMPTS:
+        # Cookie aun no disponible (CookieManager no terminó de cargar).
+        # Mostrar overlay negro y pedir otro ciclo de render.
+        st.markdown(_LOADING_OVERLAY, unsafe_allow_html=True)
+        st.session_state._auth_attempt += 1
+        st.rerun()
+
+    else:
+        # Agotamos intentos: definitivamente no hay cookie → mostrar login.
+        st.session_state._auth_attempt = 0
 
 # =========================================================
 # 5. PANTALLA DE ACCESO
