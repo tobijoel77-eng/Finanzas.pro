@@ -265,89 +265,159 @@ init_db()
 # --- CSS Premium ----------------------------------------------------------
 # Se usa <style>...</style> con triple-single-quote para evitar que Streamlit
 # escape/traduzca el contenido (bug visto cuando se enviaba como texto).
-CSS_PREMIUM = '''
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+_CSS = """
 <style>
-:root{
-  --brand:#0F4C81;
-  --brand2:#1E88E5;
-  --card:#FFFFFF;
-  --txt:#1A1F36;
-  --muted:#6B7280;
-  --ok:#10B981;
-  --border:#E5E9F0;
-  --shadow:0 4px 20px rgba(15,76,129,0.08);
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+:root {
+  --brand:  #1E88E5;
+  --brand2: #42A5F5;
+  --card:   #0D0D0D;
+  --card2:  #161616;
+  --txt:    #FFFFFF;
+  --muted:  #9BA3AF;
+  --ok:     #10B981;
+  --border: #242424;
+  --shadow: 0 4px 24px rgba(0,0,0,0.6);
 }
-html, body, [class*="css"]{
-  font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif !important;
-  color:var(--txt);
+
+html, body, [class*="css"] {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  color: var(--txt) !important;
 }
-.stApp{ background:linear-gradient(180deg,#F4F6FA 0%,#EAF0F7 100%); }
-h1,h2,h3,h4{ font-weight:700 !important; letter-spacing:-0.02em; color:var(--txt); }
-section[data-testid="stSidebar"]{
-  background:linear-gradient(180deg,#0F4C81 0%,#1E3A5F 100%) !important;
+
+.stApp { background: #000000 !important; }
+
+p, span, div, label, li, td, th, caption, figcaption { color: var(--txt) !important; }
+
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 700 !important;
+  letter-spacing: -0.02em;
+  color: #FFFFFF !important;
 }
-section[data-testid="stSidebar"] *{ color:#fff !important; }
-.stTabs [data-baseweb="tab-list"]{
-  gap:8px; background:transparent; border-bottom:1px solid var(--border);
+
+section[data-testid="stSidebar"] {
+  background: #0A0A0A !important;
+  border-right: 1px solid var(--border) !important;
 }
-.stTabs [data-baseweb="tab"]{
-  background:var(--card); border-radius:12px 12px 0 0; padding:10px 20px;
-  font-weight:600; border:1px solid var(--border); border-bottom:none;
+section[data-testid="stSidebar"] * { color: #fff !important; }
+
+.stTabs [data-baseweb="tab-list"] { gap: 6px; background: transparent; border-bottom: 1px solid var(--border); }
+.stTabs [data-baseweb="tab"] {
+  background: var(--card2); border-radius: 12px 12px 0 0; padding: 10px 20px;
+  font-weight: 600; color: var(--muted) !important;
+  border: 1px solid var(--border); border-bottom: none;
 }
-.stTabs [aria-selected="true"]{ background:var(--brand) !important; color:#fff !important; }
-[data-testid="stMetric"]{
-  background:var(--card); padding:18px 20px; border-radius:15px;
-  border:1px solid var(--border); box-shadow:var(--shadow);
-  transition:transform .15s ease, box-shadow .15s ease;
+.stTabs [aria-selected="true"] { background: var(--brand) !important; color: #fff !important; }
+
+[data-testid="stMetric"] {
+  background: var(--card2) !important;
+  padding: 18px 20px; border-radius: 15px;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow);
+  transition: transform .15s ease, box-shadow .15s ease;
 }
-[data-testid="stMetric"]:hover{
-  transform:translateY(-2px);
-  box-shadow:0 8px 28px rgba(15,76,129,0.12);
+[data-testid="stMetric"]:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(30,136,229,0.18);
 }
-[data-testid="stMetricLabel"]{
-  color:var(--muted) !important; font-weight:600; font-size:.85rem;
-  text-transform:uppercase; letter-spacing:.5px;
+[data-testid="stMetricLabel"] { color: var(--muted) !important; font-weight: 600; font-size: .82rem; text-transform: uppercase; letter-spacing: .5px; }
+[data-testid="stMetricValue"] { color: var(--brand2) !important; font-weight: 800 !important; font-size: 1.6rem !important; }
+
+.stButton > button {
+  width: 100%; border-radius: 12px; height: 3em; border: none;
+  background: linear-gradient(135deg, var(--brand) 0%, var(--brand2) 100%);
+  color: #fff !important; font-weight: 600; letter-spacing: .3px;
+  box-shadow: 0 4px 14px rgba(30,136,229,.3);
+  transition: all .15s ease;
 }
-[data-testid="stMetricValue"]{
-  color:var(--brand) !important; font-weight:800 !important; font-size:1.6rem !important;
-}
-.stButton>button{
-  width:100%; border-radius:12px; height:3em; border:none;
-  background:linear-gradient(135deg,var(--brand) 0%,var(--brand2) 100%);
-  color:#fff; font-weight:600; letter-spacing:.3px;
-  box-shadow:0 4px 14px rgba(30,136,229,.25);
-  transition:all .15s ease;
-}
-.stButton>button:hover{
-  transform:translateY(-1px);
-  box-shadow:0 6px 20px rgba(30,136,229,.35);
-  filter:brightness(1.05);
-}
-.stButton>button:active{ transform:translateY(0); }
+.stButton > button:hover { transform: translateY(-1px); box-shadow: 0 6px 22px rgba(66,165,245,.4); filter: brightness(1.08); }
+.stButton > button:active { transform: translateY(0); }
+
 .stTextInput input, .stNumberInput input, .stDateInput input,
-div[data-baseweb="select"]>div{
-  border-radius:10px !important;
-  border:1px solid var(--border) !important;
-  background:var(--card) !important;
+div[data-baseweb="select"] > div, textarea {
+  border-radius: 10px !important;
+  border: 1px solid var(--border) !important;
+  background: #111111 !important;
+  color: #FFFFFF !important;
 }
-.streamlit-expanderHeader, [data-testid="stExpander"]{
-  background:var(--card) !important; border-radius:12px !important;
-  border:1px solid var(--border) !important; box-shadow:var(--shadow);
+.stTextInput input::placeholder, .stNumberInput input::placeholder { color: var(--muted) !important; }
+
+[data-baseweb="popover"] li, [data-baseweb="menu"] li { background: #111111 !important; color: #FFFFFF !important; }
+[data-baseweb="popover"] li:hover, [data-baseweb="menu"] li:hover { background: #1E88E5 !important; }
+
+.streamlit-expanderHeader, [data-testid="stExpander"] {
+  background: var(--card2) !important;
+  border-radius: 12px !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow);
 }
-[data-testid="stDataFrame"]{
-  border-radius:12px; overflow:hidden; border:1px solid var(--border);
-  box-shadow:var(--shadow);
+details summary { color: var(--txt) !important; }
+
+[data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; border: 1px solid var(--border); box-shadow: var(--shadow); }
+[data-testid="stDataFrame"] th { background: #111111 !important; color: var(--muted) !important; }
+[data-testid="stDataFrame"] td { background: #000000 !important; color: #FFFFFF !important; }
+
+.stProgress > div > div > div { background: linear-gradient(90deg, var(--brand), var(--ok)) !important; border-radius: 10px; }
+
+.stAlert { border-radius: 12px !important; border-left-width: 4px !important; }
+
+hr { border-color: var(--border) !important; }
+
+.stCaption, [data-testid="stCaption"] { color: var(--muted) !important; }
+
+.stCheckbox label span { color: var(--txt) !important; }
+.stRadio label span { color: var(--txt) !important; }
+
+label, [data-testid="stWidgetLabel"] p { color: #FFFFFF !important; font-weight: 600 !important; }
+
+[data-testid="stForm"] {
+  background: var(--card2) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 14px !important;
+  padding: 1rem !important;
 }
-.stProgress > div > div > div{
-  background:linear-gradient(90deg,var(--brand2),var(--ok)) !important;
-  border-radius:10px;
+
+.login-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 30vh;
+  padding: 2rem 1rem;
 }
-.stAlert{ border-radius:12px !important; border-left-width:4px !important; }
-hr{ border-color:var(--border) !important; }
+.login-card {
+  background: #0D0D0D;
+  border: 1px solid #2a2a2a;
+  border-radius: 20px;
+  padding: 2.5rem 2.2rem 2rem 2.2rem;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.8);
+  text-align: center;
+}
+.login-card h1 {
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: #FFFFFF !important;
+  margin: 0 0 .3rem 0;
+}
+.login-card p {
+  font-size: .85rem;
+  color: #9BA3AF !important;
+  margin: 0 0 1.8rem 0;
+}
+
+@media (max-width: 768px) {
+  .block-container { padding: 1rem 0.8rem !important; }
+  .login-card { padding: 1.8rem 1.2rem; border-radius: 16px; }
+  .login-card h1 { font-size: 1.4rem; }
+  .stTextInput input, .stNumberInput input { font-size: 16px !important; height: 3rem !important; }
+  .stButton > button { height: 3.2em !important; font-size: 1rem !important; }
+}
 </style>
-'''
-st.markdown(CSS_PREMIUM, unsafe_allow_html=True)
+"""
+st.markdown(_CSS, unsafe_allow_html=True)
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -356,28 +426,35 @@ if "logged_in" not in st.session_state:
 # 5. PANTALLA DE ACCESO
 # =========================================================
 if not st.session_state.logged_in:
-    st.title("🚀 Plataforma Financiera Paraguay")
-    st.caption("Acceso restringido · Sólo usuarios autorizados por el administrador")
+    st.markdown("""
+    <div class="login-wrap">
+      <div class="login-card">
+        <h1>🚀 Finanzas Pro PY</h1>
+        <p>Acceso restringido &middot; Solo usuarios autorizados</p>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    u = st.text_input("Usuario", key="l_u")
-    p = st.text_input("Contraseña", type="password", key="l_p")
-    if st.button("🔐 Entrar", use_container_width=True):
-        conn, cur = get_cursor()
-        try:
-            cur.execute("SELECT * FROM usuarios WHERE username = %s", (u,))
-            user = cur.fetchone()
-            if user and bcrypt.checkpw(p.encode(), user['password'].encode()):
-                st.session_state.logged_in = True
-                st.session_state.user_id = user['id']
-                st.session_state.username = user['username']
-                st.session_state.role = user['role'] if 'role' in user.keys() else 'user'
-                st.rerun()
-            else:
-                st.error("Credenciales incorrectas")
-        finally:
-            cur.close()
-
-    st.info("¿No tenés cuenta? Pedile al administrador que te registre. El auto-registro está deshabilitado.")
+    _, col_c, _ = st.columns([1, 2, 1])
+    with col_c:
+        u = st.text_input("Usuario", key="l_u")
+        p = st.text_input("Contraseña", type="password", key="l_p")
+        if st.button("🔐 Entrar", use_container_width=True):
+            conn, cur = get_cursor()
+            try:
+                cur.execute("SELECT * FROM usuarios WHERE username = %s", (u,))
+                user = cur.fetchone()
+                if user and bcrypt.checkpw(p.encode(), user['password'].encode()):
+                    st.session_state.logged_in = True
+                    st.session_state.user_id = user['id']
+                    st.session_state.username = user['username']
+                    st.session_state.role = user['role'] if 'role' in user.keys() else 'user'
+                    st.rerun()
+                else:
+                    st.error("❌ Credenciales incorrectas")
+            finally:
+                cur.close()
+        st.caption("Sin cuenta? Pedile al administrador que te registre.")
 
 # =========================================================
 # 6. DASHBOARD
@@ -507,7 +584,7 @@ else:
                         height=380,
                         paper_bgcolor="rgba(0,0,0,0)",
                         plot_bgcolor="rgba(0,0,0,0)",
-                        font=dict(family="Inter", size=13, color="#1A1F36"),
+                        font=dict(family="Inter", size=13, color="#FFFFFF"),
                     )
                     st.plotly_chart(fig, use_container_width=True)
                 else:
@@ -877,12 +954,13 @@ else:
                     xaxis_title="Mes", yaxis_title="Valor proyectado (Gs.)",
                     height=420, margin=dict(l=10, r=10, t=10, b=10),
                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(family="Inter", color="#1A1F36"),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    font=dict(family="Inter", color="#FFFFFF"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                                font=dict(color="#FFFFFF")),
                     hovermode="x unified",
                 )
-                fig.update_xaxes(showgrid=True, gridcolor="#E5E9F0")
-                fig.update_yaxes(showgrid=True, gridcolor="#E5E9F0", tickformat=",.0f")
+                fig.update_xaxes(showgrid=True, gridcolor="#2A2A2A", color="#FFFFFF")
+                fig.update_yaxes(showgrid=True, gridcolor="#2A2A2A", color="#FFFFFF", tickformat=",.0f")
                 st.plotly_chart(fig, use_container_width=True)
         finally:
             cur.close()
