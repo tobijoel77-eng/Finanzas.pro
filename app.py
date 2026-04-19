@@ -601,39 +601,61 @@ _LOADING_OVERLAY = """
 """
 
 # ---- Inicializar estado ----
-if "logged_in"     not in st.session_state: st.session_state.logged_in     = False
-if "_auth_attempt" not in st.session_state: st.session_state._auth_attempt = 0
+if "logged_in"   not in st.session_state: st.session_state.logged_in   = False
+if "_auth_cycle" not in st.session_state: st.session_state._auth_cycle = 0
 
-_MAX_ATTEMPTS = 4   # ciclos máximos esperando a que CookieManager cargue
+_MAX_CYCLES = 2   # máximo 2 reruns esperando al CookieManager; luego → login directo
 
-# ---- Auto-login sin parpadeo: overlay negro + reintentos ----
+# ---- Auto-login sin parpadeo ----
+# Diagrama de estados:
+#   no-token + cycle<MAX → overlay + rerun   (esperar a CookieManager)
+#   no-token + cycle>=MAX → login            (sin sesión)
+#   token-inválido        → borrar cookie + ir a login  (corta el loop)
+#   token-válido          → session_state + rerun → dashboard
 if not st.session_state.logged_in:
-    _saved_token = _cookie_mgr.get("session_pro_py")
+    _token = _cookie_mgr.get("session_pro_py")
+    print(f"[AUTH] cycle={st.session_state._auth_cycle}  token={'YES' if _token else 'NO'}")
 
-    if _saved_token:
-        # Cookie encontrada — validar contra BD
-        _user_data = _validar_token(_saved_token)
-        if _user_data:
+    if _token:
+        # Cookie presente — validar contra BD
+        print("[AUTH] Validando token contra DB...")
+        try:
+            _user = _validar_token(_token)
+        except Exception as _ve:
+            print(f"[AUTH] Error en validacion: {_ve}")
+            _user = None
+
+        if _user:
+            print(f"[AUTH] Sesion valida → auto-login como '{_user['username']}'")
             st.session_state.logged_in         = True
-            st.session_state.user_id           = _user_data["id"]
-            st.session_state.username          = _user_data["username"]
-            st.session_state.role              = _user_data["role"]
-            st.session_state["_session_token"] = _saved_token
-            st.session_state._auth_attempt     = 0
+            st.session_state.user_id           = _user["id"]
+            st.session_state.username          = _user["username"]
+            st.session_state.role              = _user["role"]
+            st.session_state["_session_token"] = _token
+            st.session_state._auth_cycle       = 0
             st.rerun()
-        # Token inválido o expirado — resetear y caer al login
-        st.session_state._auth_attempt = 0
+        else:
+            # Token expirado/inválido: ELIMINAR la cookie para cortar
+            # cualquier loop futuro (sin esto, cada rerun vuelve a este punto).
+            print("[AUTH] Token invalido/expirado — eliminando cookie")
+            st.session_state._auth_cycle = _MAX_CYCLES  # saltar loading en próx. rerun
+            try:
+                _cookie_mgr.delete("session_pro_py")    # dispara rerun interno
+            except Exception:
+                pass
+            # Si delete() no disparó rerun, caemos al login normalmente.
 
-    elif st.session_state._auth_attempt < _MAX_ATTEMPTS:
-        # Cookie aun no disponible (CookieManager no terminó de cargar).
-        # Mostrar overlay negro y pedir otro ciclo de render.
+    elif st.session_state._auth_cycle < _MAX_CYCLES:
+        # No hay token aún — CookieManager todavía cargando. Esperar.
+        print(f"[AUTH] Sin token todavia, ciclo {st.session_state._auth_cycle + 1}/{_MAX_CYCLES}")
         st.markdown(_LOADING_OVERLAY, unsafe_allow_html=True)
-        st.session_state._auth_attempt += 1
+        st.session_state._auth_cycle += 1
         st.rerun()
 
     else:
-        # Agotamos intentos: definitivamente no hay cookie → mostrar login.
-        st.session_state._auth_attempt = 0
+        # Ciclos agotados: definitivamente no hay sesión → mostrar login.
+        print("[AUTH] Sin sesion activa — mostrando login")
+        st.session_state._auth_cycle = 0
 
 # =========================================================
 # 5. PANTALLA DE ACCESO
