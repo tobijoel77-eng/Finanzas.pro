@@ -5,10 +5,12 @@ import bcrypt
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
 from decimal import Decimal, ROUND_HALF_UP, getcontext
 import time
+import uuid
+import extra_streamlit_components as stx
 
 # Precisión alta para cálculos financieros (evita errores por float binario)
 getcontext().prec = 28
@@ -304,6 +306,15 @@ def _init_tablas(conn, cur):
             )
         """)
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS session_tokens (
+                token      TEXT PRIMARY KEY,
+                user_id    INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+                expires_at TIMESTAMP NOT NULL
+            )
+        """)
+        cur.execute("DELETE FROM session_tokens WHERE expires_at < NOW()")
+
         cur.execute("SELECT 1 FROM usuarios WHERE username = 'admin'")
         if not cur.fetchone():
             hashed = bcrypt.hashpw("admin123".encode(), bcrypt.gensalt()).decode()
@@ -496,8 +507,80 @@ footer { visibility: hidden !important; display: none !important; }
 """
 st.markdown(_CSS, unsafe_allow_html=True)
 
+# Cookie manager — debe instanciarse antes de cualquier lógica de sesión.
+# Renderiza un micro-componente oculto que lee las cookies del navegador.
+_cookie_mgr = stx.CookieManager(key="fpro_cm_v1")
+
+# =========================================================
+# HELPERS DE SESIÓN PERSISTENTE
+# =========================================================
+def _crear_token(user_id: int) -> str:
+    """Genera UUID, lo persiste en DB y retorna el valor para guardar en cookie."""
+    token   = str(uuid.uuid4())
+    expires = datetime.now() + timedelta(days=7)
+    conn, cur = get_cursor()
+    if cur:
+        try:
+            cur.execute(
+                "DELETE FROM session_tokens WHERE user_id = %s OR expires_at < NOW()",
+                (user_id,)
+            )
+            cur.execute(
+                "INSERT INTO session_tokens (token, user_id, expires_at) VALUES (%s,%s,%s)",
+                (token, user_id, expires)
+            )
+            conn.commit()
+        finally:
+            cur.close()
+    return token
+
+def _validar_token(token: str) -> dict | None:
+    """Valida el token contra la DB. Retorna datos del usuario o None si es inválido/expirado."""
+    if not token:
+        return None
+    conn, cur = get_cursor()
+    if not cur:
+        return None
+    try:
+        cur.execute("""
+            SELECT u.id, u.username, COALESCE(u.role, 'user') AS role
+            FROM session_tokens st
+            JOIN usuarios u ON u.id = st.user_id
+            WHERE st.token = %s AND st.expires_at > NOW()
+        """, (token,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        cur.close()
+
+def _revocar_token(token: str):
+    """Elimina el token de la DB al cerrar sesión."""
+    if not token:
+        return
+    conn, cur = get_cursor()
+    if cur:
+        try:
+            cur.execute("DELETE FROM session_tokens WHERE token = %s", (token,))
+            conn.commit()
+        finally:
+            cur.close()
+
+# ---- Inicializar estado ----
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
+
+# ---- Auto-login por cookie (se ejecuta en cada recarga) ----
+if not st.session_state.logged_in:
+    _saved_token = _cookie_mgr.get("session_pro_py")
+    if _saved_token:
+        _user_data = _validar_token(_saved_token)
+        if _user_data:
+            st.session_state.logged_in            = True
+            st.session_state.user_id              = _user_data["id"]
+            st.session_state.username             = _user_data["username"]
+            st.session_state.role                 = _user_data["role"]
+            st.session_state["_session_token"]    = _saved_token
+            st.rerun()
 
 # =========================================================
 # 5. PANTALLA DE ACCESO
@@ -522,10 +605,16 @@ if not st.session_state.logged_in:
                 cur.execute("SELECT * FROM usuarios WHERE username = %s", (u,))
                 user = cur.fetchone()
                 if user and bcrypt.checkpw(p.encode(), user['password'].encode()):
-                    st.session_state.logged_in = True
-                    st.session_state.user_id = user['id']
-                    st.session_state.username = user['username']
-                    st.session_state.role = user['role'] if 'role' in user.keys() else 'user'
+                    st.session_state.logged_in  = True
+                    st.session_state.user_id    = user['id']
+                    st.session_state.username   = user['username']
+                    st.session_state.role       = user['role'] if 'role' in user.keys() else 'user'
+                    _tok = _crear_token(user['id'])
+                    st.session_state["_session_token"] = _tok
+                    _cookie_mgr.set(
+                        "session_pro_py", _tok,
+                        expires_at=datetime.now() + timedelta(days=7)
+                    )
                     st.rerun()
                 else:
                     st.error("❌ Credenciales incorrectas")
@@ -554,7 +643,11 @@ else:
     st.sidebar.markdown(f"**{rol_badge}**")
     st.sidebar.divider()
     if st.sidebar.button("Cerrar Sesión"):
-        for k in ["logged_in", "user_id", "username", "role"]:
+        _t = st.session_state.get("_session_token") or _cookie_mgr.get("session_pro_py")
+        if _t:
+            _revocar_token(_t)
+        _cookie_mgr.delete("session_pro_py")
+        for k in ["logged_in", "user_id", "username", "role", "_session_token"]:
             st.session_state.pop(k, None)
         st.rerun()
 
