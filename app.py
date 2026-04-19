@@ -632,39 +632,34 @@ else:
 
         conn, cur = get_cursor()
         try:
-            # -------- DASHBOARD KPIs (Total a Cobrar vs Total a Pagar) --------
+            # -------- DASHBOARD KPIs --------
             cur.execute("""
                 SELECT
-                    COALESCE(SUM(CASE WHEN prestamista_id = %(uid)s THEN total_pagar ELSE 0 END),0) AS por_cobrar,
-                    COALESCE(SUM(CASE WHEN prestatario_id = %(uid)s THEN total_pagar ELSE 0 END),0) AS por_pagar,
-                    COUNT(*) FILTER (WHERE estado='aprobado') AS activos,
-                    COUNT(*) FILTER (WHERE estado='pendiente') AS pendientes
+                    COALESCE(SUM(CASE WHEN prestamista_id = %(uid)s AND estado='aprobado' THEN total_pagar ELSE 0 END),0) AS por_cobrar,
+                    COALESCE(SUM(CASE WHEN prestatario_id = %(uid)s AND estado='aprobado' THEN total_pagar ELSE 0 END),0) AS por_pagar,
+                    COALESCE(SUM(CASE WHEN prestamista_id = %(uid)s AND estado='pagado'   THEN total_pagar ELSE 0 END),0) AS cobrado,
+                    COUNT(*) FILTER (WHERE estado='pendiente'
+                        AND (prestamista_id=%(uid)s OR prestatario_id=%(uid)s)) AS n_pend
                 FROM prestamos
-                WHERE (prestamista_id = %(uid)s OR prestatario_id = %(uid)s)
-                  AND estado = 'aprobado'
+                WHERE prestamista_id = %(uid)s OR prestatario_id = %(uid)s
             """, {"uid": st.session_state.user_id})
             kp = cur.fetchone() or {}
             por_cobrar = Decimal(str(kp['por_cobrar'] or 0))
-            por_pagar = Decimal(str(kp['por_pagar'] or 0))
-            balance = por_cobrar - por_pagar
+            por_pagar  = Decimal(str(kp['por_pagar']  or 0))
+            cobrado    = Decimal(str(kp['cobrado']    or 0))
+            n_pend     = int(kp['n_pend'] or 0)
+            balance    = por_cobrar - por_pagar
 
-            # Pendientes (no aprobados) — contador separado
-            cur.execute("""
-                SELECT COUNT(*) AS n FROM prestamos
-                WHERE (prestamista_id = %(uid)s OR prestatario_id = %(uid)s)
-                  AND estado = 'pendiente'
-            """, {"uid": st.session_state.user_id})
-            n_pend = (cur.fetchone() or {}).get('n', 0) or 0
-
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("💚 Total a Cobrar", fmt_gs(por_cobrar))
-            k2.metric("❤️ Total a Pagar", fmt_gs(por_pagar))
-            k3.metric(
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("💚 Por Cobrar",  fmt_gs(por_cobrar))
+            k2.metric("❤️ Por Pagar",   fmt_gs(por_pagar))
+            k3.metric("✅ Ya Cobrado",  fmt_gs(cobrado))
+            k4.metric(
                 "⚖️ Balance Neto", fmt_gs(balance),
-                delta=("Acreedor neto" if balance >= 0 else "Deudor neto"),
+                delta="Acreedor neto" if balance >= 0 else "Deudor neto",
                 delta_color="normal" if balance >= 0 else "inverse",
             )
-            k4.metric("📬 Pendientes", f"{n_pend}")
+            k5.metric("📬 Pendientes", f"{n_pend}")
 
             st.divider()
 
@@ -805,8 +800,8 @@ else:
                                 if p_rec['fecha_vencimiento']:
                                     st.write(f"**Vencimiento:** {p_rec['fecha_vencimiento']}")
 
-                                c1, c2 = st.columns(2)
-                                if c1.button("✅ Aprobar", key=f"a_{p_rec['id']}", use_container_width=True):
+                                _cols = st.columns(3) if is_admin else st.columns(2)
+                                if _cols[0].button("✅ Aprobar", key=f"a_{p_rec['id']}", use_container_width=True):
                                     try:
                                         cur.execute(
                                             "UPDATE prestamos SET estado = 'aprobado' WHERE id = %s",
@@ -817,12 +812,20 @@ else:
                                     except Exception as e:
                                         conn.rollback()
                                         st.error(f"Error: {e}")
-                                if c2.button("❌ Rechazar", key=f"r_{p_rec['id']}", use_container_width=True):
+                                if _cols[1].button("❌ Rechazar", key=f"r_{p_rec['id']}", use_container_width=True):
                                     try:
                                         cur.execute(
                                             "UPDATE prestamos SET estado = 'rechazado' WHERE id = %s",
                                             (p_rec['id'],)
                                         )
+                                        conn.commit()
+                                        st.rerun()
+                                    except Exception as e:
+                                        conn.rollback()
+                                        st.error(f"Error: {e}")
+                                if is_admin and _cols[2].button("🗑️ Eliminar", key=f"del_pend_{p_rec['id']}", use_container_width=True):
+                                    try:
+                                        cur.execute("DELETE FROM prestamos WHERE id = %s", (p_rec['id'],))
                                         conn.commit()
                                         st.rerun()
                                     except Exception as e:
@@ -834,8 +837,10 @@ else:
             st.subheader("📈 Préstamos Activos")
             cur.execute("""
                 SELECT
+                    p.id,
                     u1.username AS prestamista,
                     u2.username AS prestatario,
+                    p.prestamista_id,
                     p.monto,
                     p.interes AS tasa_mensual_pct,
                     p.plazo_meses,
@@ -851,11 +856,78 @@ else:
                 ORDER BY p.fecha_vencimiento NULLS LAST
             """, {"uid": st.session_state.user_id})
             rows = cur.fetchall()
-            if rows:
-                df_l = pd.DataFrame([dict(r) for r in rows])
-                st.dataframe(df_l, use_container_width=True, hide_index=True)
-            else:
+            if not rows:
                 st.info("No tienes préstamos activos.")
+            else:
+                for row in rows:
+                    es_prestamista = (row['prestamista_id'] == st.session_state.user_id)
+                    rol_txt = "Prestás a" if es_prestamista else "Te presta"
+                    contraparte = row['prestatario'] if es_prestamista else row['prestamista']
+                    titulo_act = f"{rol_txt} **{contraparte}** — {fmt_gs(row['monto'])}"
+                    with st.expander(titulo_act):
+                        ia1, ia2, ia3 = st.columns(3)
+                        ia1.write(f"**Tasa:** {row['tasa_mensual_pct']}% mensual")
+                        ia2.write(f"**Plazo:** {row['plazo_meses']} meses ({row['sistema']})")
+                        ia3.write(f"**Vence:** {row['fecha_vencimiento'] or 'S/D'}")
+                        ib1, ib2 = st.columns(2)
+                        ib1.metric("Cuota mensual", fmt_gs(row['cuota_mensual'] or 0))
+                        ib2.metric("Total a pagar", fmt_gs(row['total_pagar'] or 0))
+
+                        btn_cols = st.columns(3) if is_admin else st.columns(1)
+                        if btn_cols[0].button("💰 Registrar Pago", key=f"pago_{row['id']}", use_container_width=True, type="primary"):
+                            try:
+                                cur.execute("UPDATE prestamos SET estado = 'pagado' WHERE id = %s", (row['id'],))
+                                conn.commit()
+                                st.success("Pago registrado. El préstamo se movió a 'Cobrado'.")
+                                st.rerun()
+                            except Exception as e:
+                                conn.rollback()
+                                st.error(f"Error: {e}")
+                        if is_admin:
+                            if btn_cols[1].button("🗑️ Eliminar", key=f"del_act_{row['id']}", use_container_width=True):
+                                try:
+                                    cur.execute("DELETE FROM prestamos WHERE id = %s", (row['id'],))
+                                    conn.commit()
+                                    st.rerun()
+                                except Exception as e:
+                                    conn.rollback()
+                                    st.error(f"Error: {e}")
+
+            # ---------------- PRÉSTAMOS PAGADOS (historial) ----------------
+            st.divider()
+            st.subheader("✅ Historial de Cobros")
+            cur.execute("""
+                SELECT
+                    p.id,
+                    u1.username AS prestamista,
+                    u2.username AS prestatario,
+                    p.prestamista_id,
+                    p.monto, p.total_pagar, p.fecha_vencimiento
+                FROM prestamos p
+                JOIN usuarios u1 ON p.prestamista_id = u1.id
+                JOIN usuarios u2 ON p.prestatario_id = u2.id
+                WHERE (p.prestamista_id = %(uid)s OR p.prestatario_id = %(uid)s)
+                  AND p.estado = 'pagado'
+                ORDER BY p.fecha_vencimiento DESC NULLS LAST
+            """, {"uid": st.session_state.user_id})
+            pagados = cur.fetchall()
+            if not pagados:
+                st.info("Aun no hay préstamos registrados como pagados.")
+            else:
+                for pag in pagados:
+                    es_p = (pag['prestamista_id'] == st.session_state.user_id)
+                    lab = ("Cobrado de" if es_p else "Pagado a") + f" **{pag['prestatario'] if es_p else pag['prestamista']}**"
+                    with st.expander(f"{lab} — {fmt_gs(pag['total_pagar'] or pag['monto'])}"):
+                        st.write(f"**Capital:** {fmt_gs(pag['monto'])} | **Total pagado:** {fmt_gs(pag['total_pagar'] or pag['monto'])}")
+                        if is_admin:
+                            if st.button("🗑️ Eliminar registro", key=f"del_pag_{pag['id']}", use_container_width=True):
+                                try:
+                                    cur.execute("DELETE FROM prestamos WHERE id = %s", (pag['id'],))
+                                    conn.commit()
+                                    st.rerun()
+                                except Exception as e:
+                                    conn.rollback()
+                                    st.error(f"Error: {e}")
 
         finally:
             cur.close()
@@ -1305,6 +1377,75 @@ else:
                                         except Exception as e:
                                             conn.rollback()
                                             st.error(f"Error: {e}")
+            # -------- GESTION DE PRESTAMOS (ADMIN) --------
+                st.divider()
+                st.subheader("🤝 Gestión Global de Préstamos")
+                st.caption("Vista de todos los préstamos del sistema · Solo administradores")
+
+                estados_filtro = st.multiselect(
+                    "Filtrar por estado",
+                    ["pendiente", "aprobado", "rechazado", "pagado"],
+                    default=["pendiente", "aprobado"],
+                    key="adm_est_filtro"
+                )
+                if estados_filtro:
+                    placeholders = ",".join(["%s"] * len(estados_filtro))
+                    cur.execute(f"""
+                        SELECT
+                            p.id,
+                            u1.username AS prestamista,
+                            u2.username AS prestatario,
+                            p.monto, p.interes, p.plazo_meses, p.sistema,
+                            p.cuota_mensual, p.total_pagar,
+                            p.estado, p.fecha_creacion, p.fecha_vencimiento
+                        FROM prestamos p
+                        JOIN usuarios u1 ON p.prestamista_id = u1.id
+                        JOIN usuarios u2 ON p.prestatario_id = u2.id
+                        WHERE p.estado IN ({placeholders})
+                        ORDER BY p.fecha_creacion DESC
+                    """, tuple(estados_filtro))
+                    todos = cur.fetchall()
+                    if not todos:
+                        st.info("No hay préstamos con esos estados.")
+                    else:
+                        for pr in todos:
+                            color_badge = {"aprobado": "🟢", "pendiente": "🟡", "pagado": "✅", "rechazado": "🔴"}.get(pr['estado'], "⚪")
+                            with st.expander(f"{color_badge} #{pr['id']} — {pr['prestamista']} → {pr['prestatario']} | {fmt_gs(pr['monto'])} | {pr['estado'].upper()}"):
+                                gc1, gc2, gc3 = st.columns(3)
+                                gc1.write(f"**Tasa:** {pr['interes']}% | **Plazo:** {pr['plazo_meses']} m | **Sistema:** {pr['sistema']}")
+                                gc2.write(f"**Cuota:** {fmt_gs(pr['cuota_mensual'] or 0)} | **Total:** {fmt_gs(pr['total_pagar'] or 0)}")
+                                gc3.write(f"**Creado:** {str(pr['fecha_creacion'])[:10]} | **Vence:** {pr['fecha_vencimiento'] or 'S/D'}")
+
+                                gb1, gb2, gb3 = st.columns(3)
+                                if pr['estado'] == 'aprobado':
+                                    if gb1.button("💰 Marcar Pagado", key=f"adm_pago_{pr['id']}", use_container_width=True, type="primary"):
+                                        try:
+                                            cur.execute("UPDATE prestamos SET estado='pagado' WHERE id=%s", (pr['id'],))
+                                            conn.commit(); st.rerun()
+                                        except Exception as e:
+                                            conn.rollback(); st.error(f"Error: {e}")
+                                if pr['estado'] == 'pendiente':
+                                    if gb1.button("✅ Aprobar", key=f"adm_apr_{pr['id']}", use_container_width=True):
+                                        try:
+                                            cur.execute("UPDATE prestamos SET estado='aprobado' WHERE id=%s", (pr['id'],))
+                                            conn.commit(); st.rerun()
+                                        except Exception as e:
+                                            conn.rollback(); st.error(f"Error: {e}")
+                                    if gb2.button("❌ Rechazar", key=f"adm_rech_{pr['id']}", use_container_width=True):
+                                        try:
+                                            cur.execute("UPDATE prestamos SET estado='rechazado' WHERE id=%s", (pr['id'],))
+                                            conn.commit(); st.rerun()
+                                        except Exception as e:
+                                            conn.rollback(); st.error(f"Error: {e}")
+                                if gb3.button("🗑️ Eliminar", key=f"adm_del_{pr['id']}", use_container_width=True):
+                                    try:
+                                        cur.execute("DELETE FROM prestamos WHERE id=%s", (pr['id'],))
+                                        conn.commit(); st.rerun()
+                                    except Exception as e:
+                                        conn.rollback(); st.error(f"Error: {e}")
+                else:
+                    st.info("Selecciona al menos un estado en el filtro.")
+
             finally:
                 cur.close()
 
