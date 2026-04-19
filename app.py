@@ -600,107 +600,81 @@ _LOADING_OVERLAY = """
 <style>@keyframes _aspin{to{transform:rotate(360deg)}}</style>
 """
 
-# ---- Session state initialization ----
-if "logged_in"   not in st.session_state: st.session_state.logged_in   = False
-if "_auth_cycle" not in st.session_state: st.session_state._auth_cycle = 0
+# =========================================================
+# 5. AUTENTICACION — simple y estable (prioridad: demo)
+# =========================================================
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
-_MAX_CYCLES = 2
-
-# =========================================================
-# 5. GATEKEEPER - punto de entrada unico, bloquea dashboard
-# =========================================================
-# Flujo garantizado:
-#   Ciclo 0 (F5): CookieManager aun cargando -> overlay + sleep(0.5) + rerun
-#   Ciclo 1: cookie disponible -> validar DB -> auto-login o borrar + login
-#   Si token invalido: borrar cookie, mostrar login, st.stop()
-#   Si sin token tras MAX_CYCLES: mostrar login, st.stop()
-#   st.stop() impide que el dashboard renderice SIN sesion confirmada.
-# =========================================================
+# Intento unico de auto-login via cookie (sin esperas ni reruns)
 if not st.session_state.logged_in:
-    _token = _cookie_mgr.get("session_pro_py")
-    print(f"[AUTH] cycle={st.session_state._auth_cycle}  token={'YES' if _token else 'NO'}")
-
-    if _token:
-        # Cookie presente - validar contra DB
-        try:
+    try:
+        _token = _cookie_mgr.get("session_pro_py")
+        if _token:
             _user = _validar_token(_token)
-        except Exception as _e:
-            print(f"[AUTH] Error validando token: {_e}")
-            _user = None
+            if _user:
+                st.session_state.logged_in         = True
+                st.session_state.user_id           = _user["id"]
+                st.session_state.username          = _user["username"]
+                st.session_state.role              = _user["role"]
+                st.session_state["_session_token"] = _token
+                st.rerun()
+            else:
+                try: _cookie_mgr.delete("session_pro_py")
+                except: pass
+    except Exception:
+        # Si falla cualquier cosa, resetear y mostrar login limpio
+        for _k in ["logged_in", "user_id", "username", "role", "_session_token"]:
+            st.session_state.pop(_k, None)
+        st.session_state.logged_in = False
 
-        if _user:
-            print(f"[AUTH] Auto-login como '{_user['username']}'")
-            st.session_state.logged_in         = True
-            st.session_state.user_id           = _user["id"]
-            st.session_state.username          = _user["username"]
-            st.session_state.role              = _user["role"]
-            st.session_state["_session_token"] = _token
-            st.session_state._auth_cycle       = 0
-            st.rerun()
-        else:
-            # Token expirado/invalido: borrar cookie y caer al login
-            print("[AUTH] Token invalido - eliminando cookie")
-            st.session_state._auth_cycle = _MAX_CYCLES   # evita overlay en proximo rerun
-            try:
-                _cookie_mgr.delete("session_pro_py")
-            except Exception:
-                pass
+# ---- Formulario de login (se muestra si no hay sesion activa) ----
+if not st.session_state.logged_in:
+    st.markdown("""
+    <div class="login-wrap">
+      <div class="login-card">
+        <h1>🚀 Finanzas Pro PY</h1>
+        <p>Acceso restringido &middot; Solo usuarios autorizados</p>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    elif st.session_state._auth_cycle < _MAX_CYCLES:
-        # Sin token aun - CookieManager todavia cargando. Esperar un ciclo.
-        print(f"[AUTH] Esperando cookie, ciclo {st.session_state._auth_cycle + 1}/{_MAX_CYCLES}")
-        _slot_ov = st.empty()
-        _slot_ov.markdown(_LOADING_OVERLAY, unsafe_allow_html=True)
-        st.session_state._auth_cycle += 1
-        time.sleep(0.5)
-        st.rerun()
-
-    # Sin sesion confirmada -> mostrar login y detener ejecucion
-    print("[AUTH] Sin sesion activa - mostrando login")
-    st.session_state._auth_cycle = 0
-
-    _login_slot = st.empty()
-    with _login_slot.container():
-        st.markdown("""
-        <div class="login-wrap">
-          <div class="login-card">
-            <h1>🚀 Finanzas Pro PY</h1>
-            <p>Acceso restringido &middot; Solo usuarios autorizados</p>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        _, col_c, _ = st.columns([1, 2, 1])
-        with col_c:
-            u = st.text_input("Usuario", key="l_u")
-            p = st.text_input("Contraseña", type="password", key="l_p")
-            if st.button("🔐 Entrar", use_container_width=True):
-                conn_l, cur_l = get_cursor()
-                if cur_l:
-                    try:
-                        cur_l.execute("SELECT * FROM usuarios WHERE username = %s", (u,))
-                        user = cur_l.fetchone()
-                        if user and bcrypt.checkpw(p.encode(), user["password"].encode()):
-                            st.session_state.logged_in  = True
-                            st.session_state.user_id    = user["id"]
-                            st.session_state.username   = user["username"]
-                            st.session_state.role       = (user["role"] if "role" in user.keys() else "user") or "user"
-                            _tok = _crear_token(user["id"])
-                            st.session_state["_session_token"] = _tok
+    _, col_c, _ = st.columns([1, 2, 1])
+    with col_c:
+        u = st.text_input("Usuario", key="l_u")
+        p = st.text_input("Contraseña", type="password", key="l_p")
+        if st.button("🔐 Entrar", use_container_width=True):
+            conn_l, cur_l = get_cursor()
+            if cur_l:
+                try:
+                    cur_l.execute("SELECT * FROM usuarios WHERE username = %s", (u,))
+                    user = cur_l.fetchone()
+                    if user and bcrypt.checkpw(p.encode(), user["password"].encode()):
+                        st.session_state.logged_in = True
+                        st.session_state.user_id   = user["id"]
+                        st.session_state.username  = user["username"]
+                        st.session_state.role      = (user["role"] if "role" in user.keys() else "user") or "user"
+                        _tok = _crear_token(user["id"])
+                        st.session_state["_session_token"] = _tok
+                        try:
                             _cookie_mgr.set(
                                 "session_pro_py", _tok,
                                 expires_at=datetime.now() + timedelta(days=7)
                             )
-                            st.rerun()
-                        else:
-                            st.error("Credenciales incorrectas")
-                    finally:
-                        cur_l.close()
-                else:
-                    st.error("Sin conexion a la base de datos. Recarga la pagina.")
-            st.caption("Sin cuenta? Pedile al administrador que te registre.")
+                        except Exception:
+                            pass
+                        st.rerun()
+                    else:
+                        st.error("❌ Credenciales incorrectas")
+                except Exception as _le:
+                    st.error(f"Error al iniciar sesión: {_le}")
+                finally:
+                    cur_l.close()
+            else:
+                st.error("⚠️ Sin conexión a la base de datos. Recargá la página.")
+        st.caption("Sin cuenta? Pedile al administrador que te registre.")
 
-    st.stop()  # BLOQUEO TOTAL: el dashboard nunca renderiza sin sesion confirmada
+    st.stop()  # Impide que el dashboard renderice sin sesion
 
 # =========================================================
 # 6. DASHBOARD - solo alcanzable si logged_in = True
