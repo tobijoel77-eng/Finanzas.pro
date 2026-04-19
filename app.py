@@ -415,6 +415,15 @@ label, [data-testid="stWidgetLabel"] p { color: #FFFFFF !important; font-weight:
   .stTextInput input, .stNumberInput input { font-size: 16px !important; height: 3rem !important; }
   .stButton > button { height: 3.2em !important; font-size: 1rem !important; }
 }
+
+/* Ocultar barra superior, footer y boton deploy de Streamlit Cloud */
+#MainMenu { visibility: hidden; }
+footer { visibility: hidden; }
+header { visibility: hidden; }
+.stAppDeployButton { display: none; }
+
+/* Eliminar hueco superior que deja el header oculto */
+.block-container { padding-top: 1rem !important; }
 </style>
 """
 st.markdown(_CSS, unsafe_allow_html=True)
