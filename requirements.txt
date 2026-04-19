@@ -1,5 +1,6 @@
 streamlit
 psycopg2-binary
+sqlalchemy
 pandas
 bcrypt
 python-dateutil

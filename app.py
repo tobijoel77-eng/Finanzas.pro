@@ -1,6 +1,7 @@
 import streamlit as st
 import psycopg2
 from psycopg2 import extras, InterfaceError, OperationalError
+from sqlalchemy import create_engine
 import bcrypt
 import pandas as pd
 import plotly.express as px
@@ -16,51 +17,51 @@ import extra_streamlit_components as stx
 getcontext().prec = 28
 
 # =========================================================
-# 1. GESTIÓN DE CONEXIÓN — ROBUSTA PARA PRODUCCIÓN
+# 1. GESTIÓN DE CONEXIÓN — SQLALCHEMY POOL + POOL_PRE_PING
 # =========================================================
 
-def _params_conexion():
-    return dict(
-        host=st.secrets["postgres"]["host"],
-        database=st.secrets["postgres"]["database"],
-        user=st.secrets["postgres"]["user"],
-        password=st.secrets["postgres"]["password"],
-        port=st.secrets["postgres"]["port"],
-        connect_timeout=10,
-        keepalives=1,
-        keepalives_idle=30,
-        keepalives_interval=10,
-        keepalives_count=5,
+@st.cache_resource
+def _get_engine():
+    """Motor SQLAlchemy cacheado. pool_pre_ping valida cada conexión antes de usarla."""
+    s = st.secrets["postgres"]
+    url = (
+        f"postgresql+psycopg2://{s['user']}:{s['password']}"
+        f"@{s['host']}:{s['port']}/{s['database']}"
+    )
+    return create_engine(
+        url,
+        pool_pre_ping=True,      # SELECT 1 antes de cada checkout → detecta conexiones muertas
+        pool_size=5,             # conexiones base en el pool
+        max_overflow=10,         # extra en picos de carga
+        pool_timeout=30,         # segundos esperando slot libre
+        pool_recycle=1800,       # recicla conexiones cada 30 min
+        connect_args={
+            "connect_timeout": 10,
+            "keepalives":          1,
+            "keepalives_idle":    30,
+            "keepalives_interval": 10,
+            "keepalives_count":    5,
+        },
     )
 
-@st.cache_resource(ttl=3600)
-def _pool():
-    """Conexión cacheada a nivel de servidor. Se renueva cada 1 hora."""
-    return psycopg2.connect(**_params_conexion())
-
-def _ping(conn) -> bool:
-    """Devuelve True si la conexión responde."""
-    try:
-        if conn.closed != 0:
-            return False
-        conn.cursor().execute("SELECT 1")
-        return True
-    except (InterfaceError, OperationalError):
-        return False
-
 def get_connection():
-    """Devuelve una conexión activa. Reconecta automáticamente si falla."""
-    conn = _pool()
-    if not _ping(conn):
-        _pool.clear()          # borra la cache para forzar nueva conexión
-        conn = _pool()
-        if not _ping(conn):
-            st.error("No se pudo conectar a la base de datos. Intentá recargar la página.")
+    """
+    Extrae una conexión DBAPI del pool SQLAlchemy.
+    Si falla (InterfaceError / OperationalError), descarta el pool y reintenta.
+    """
+    for attempt in range(2):
+        try:
+            return _get_engine().raw_connection()
+        except (InterfaceError, OperationalError):
+            _get_engine().dispose()   # descarta todas las conexiones del pool
+        except Exception as e:
+            st.error(f"Error de conexión: {e}")
             return None
-    return conn
+    st.error("No se pudo conectar a la base de datos. Intentá recargar la página.")
+    return None
 
 def get_cursor():
-    """Cursor fresco sobre una conexión garantizada activa."""
+    """Cursor DictCursor sobre una conexión pre-pingeada del pool."""
     conn = get_connection()
     if conn:
         return conn, conn.cursor(cursor_factory=extras.DictCursor)
@@ -507,9 +508,29 @@ footer { visibility: hidden !important; display: none !important; }
 """
 st.markdown(_CSS, unsafe_allow_html=True)
 
+# Heartbeat JS: ping cada 2 minutos para evitar que Streamlit Cloud
+# ponga la sesion en sleep y corte el WebSocket.
+st.markdown("""
+<script>
+(function(){
+  setInterval(function(){
+    try { fetch(window.location.href,{method:'HEAD',cache:'no-cache',mode:'no-cors'}); }
+    catch(e){}
+  }, 120000);
+})();
+</script>
+""", unsafe_allow_html=True)
+
 # Cookie manager — debe instanciarse antes de cualquier lógica de sesión.
 # Renderiza un micro-componente oculto que lee las cookies del navegador.
 _cookie_mgr = stx.CookieManager(key="fpro_cm_v1")
+
+# F5 FIX: el CookieManager necesita un ciclo de render para leer las
+# cookies del navegador. Si es la primera ejecucion de esta sesion,
+# forzamos un rerun inmediato para que el segundo ciclo ya tenga cookies.
+if "_cookies_ready" not in st.session_state:
+    st.session_state._cookies_ready = True
+    st.rerun()
 
 # =========================================================
 # HELPERS DE SESIÓN PERSISTENTE
