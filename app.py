@@ -241,6 +241,16 @@ def init_db():
             )
         """)
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS gastos (
+                id SERIAL PRIMARY KEY,
+                fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+                categoria TEXT NOT NULL,
+                monto INTEGER NOT NULL,
+                descripcion TEXT DEFAULT ''
+            )
+        """)
+
         cur.execute("SELECT 1 FROM usuarios WHERE username = 'admin'")
         if not cur.fetchone():
             hashed = bcrypt.hashpw("admin123".encode(), bcrypt.gensalt()).decode()
@@ -520,14 +530,19 @@ else:
             """, (st.session_state.user_id,))
             tot = cur.fetchone()
             ingresos_tot = Decimal(str(tot['ingresos'] or 0))
-            egresos_tot = Decimal(str(tot['egresos'] or 0))
-            saldo_neto = ingresos_tot - egresos_tot
+            egresos_tot  = Decimal(str(tot['egresos']  or 0))
 
-            k1, k2, k3 = st.columns(3)
-            k1.metric("💵 Ingresos Totales", fmt_gs(ingresos_tot))
-            k2.metric("💸 Egresos Totales", fmt_gs(egresos_tot))
-            k3.metric(
-                "📊 Saldo Neto",
+            cur.execute("SELECT COALESCE(SUM(monto), 0) AS total FROM gastos")
+            gastos_tot = Decimal(str((cur.fetchone() or {}).get('total', 0) or 0))
+
+            saldo_neto = ingresos_tot - egresos_tot - gastos_tot
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("💵 Ingresos Totales",  fmt_gs(ingresos_tot))
+            k2.metric("💸 Egresos Totales",   fmt_gs(egresos_tot))
+            k3.metric("🏢 Gastos Adm.",        fmt_gs(gastos_tot))
+            k4.metric(
+                "📊 Balance Neto",
                 fmt_gs(saldo_neto),
                 delta=f"{'▲' if saldo_neto >= 0 else '▼'} {fmt_gs(abs(saldo_neto))}",
                 delta_color="normal" if saldo_neto >= 0 else "inverse",
@@ -1494,6 +1509,91 @@ else:
                                         conn.rollback(); st.error(f"Error: {e}")
                 else:
                     st.info("Selecciona al menos un estado en el filtro.")
+
+            # -------- GASTOS ADMINISTRATIVOS --------
+                st.divider()
+                st.subheader("🏢 Gastos Administrativos")
+                st.caption("Registra costos operativos del negocio. Se descuentan del Balance Neto global.")
+
+                CATS_GASTO = ["Papelería/Impresiones", "Comisiones Bancarias",
+                              "Movilidad", "Honorarios", "Servicios TI", "Otros"]
+
+                with st.expander("➕ Registrar Gasto", expanded=False):
+                    with st.form("form_gasto", clear_on_submit=True):
+                        fg1, fg2, fg3 = st.columns(3)
+                        with fg1:
+                            g_cat   = st.selectbox("Categoría", CATS_GASTO, key="g_cat")
+                            g_fecha = st.date_input("Fecha", datetime.now(), key="g_fecha")
+                        with fg2:
+                            g_monto = st.number_input("Monto (Gs.)", min_value=0, step=5000, key="g_monto")
+                        with fg3:
+                            g_desc = st.text_input("Descripción", key="g_desc")
+                            st.write(""); st.write("")
+                        if st.form_submit_button("💾 Guardar Gasto", use_container_width=True):
+                            if g_monto <= 0:
+                                st.warning("El monto debe ser mayor a 0.")
+                            else:
+                                try:
+                                    cur.execute(
+                                        "INSERT INTO gastos (fecha, categoria, monto, descripcion) VALUES (%s,%s,%s,%s)",
+                                        (g_fecha, g_cat, int(g_monto), g_desc)
+                                    )
+                                    conn.commit()
+                                    st.success(f"Gasto de {fmt_gs(g_monto)} registrado.")
+                                    st.rerun()
+                                except Exception as e:
+                                    conn.rollback()
+                                    st.error(f"Error: {e}")
+
+                # Tabla últimos 10 gastos
+                cur.execute("""
+                    SELECT id, fecha, categoria, monto, descripcion
+                    FROM gastos ORDER BY fecha DESC, id DESC LIMIT 10
+                """)
+                ultimos_g = cur.fetchall()
+                if ultimos_g:
+                    df_g = pd.DataFrame([dict(r) for r in ultimos_g])
+                    df_g["monto"] = df_g["monto"].apply(fmt_gs)
+                    st.dataframe(df_g, use_container_width=True, hide_index=True)
+
+                    # KPI rápido de totales por categoría
+                    cur.execute("SELECT categoria, SUM(monto) AS total FROM gastos GROUP BY categoria ORDER BY total DESC")
+                    cats_g = cur.fetchall()
+                    if cats_g:
+                        st.subheader("📊 Gastos por categoría")
+                        df_cats_g = pd.DataFrame([dict(r) for r in cats_g])
+                        df_cats_g["total"] = df_cats_g["total"].astype(float)
+                        fig_g = px.bar(
+                            df_cats_g, x="categoria", y="total",
+                            color_discrete_sequence=["#FF6B6B"],
+                            labels={"categoria": "", "total": "Gs."},
+                        )
+                        fig_g.update_layout(
+                            height=280,
+                            margin=dict(l=10, r=10, t=10, b=10),
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            font=dict(family="Inter", color="#FFFFFF"),
+                        )
+                        fig_g.update_xaxes(showgrid=False, color="#FFFFFF")
+                        fig_g.update_yaxes(showgrid=True, gridcolor="#1E1E1E", color="#FFFFFF", tickformat=",.0f")
+                        st.plotly_chart(fig_g, use_container_width=True)
+
+                    # Botones de borrado por gasto
+                    st.subheader("🗑️ Eliminar gastos")
+                    for g in ultimos_g:
+                        col_label, col_btn = st.columns([4, 1])
+                        col_label.write(f"{g['fecha']} | {g['categoria']} | {fmt_gs(g['monto'])} | {g['descripcion'] or '—'}")
+                        if col_btn.button("Eliminar", key=f"del_g_{g['id']}", use_container_width=True):
+                            try:
+                                cur.execute("DELETE FROM gastos WHERE id = %s", (g['id'],))
+                                conn.commit()
+                                st.rerun()
+                            except Exception as e:
+                                conn.rollback()
+                                st.error(f"Error: {e}")
+                else:
+                    st.info("Aún no hay gastos registrados.")
 
             finally:
                 cur.close()
