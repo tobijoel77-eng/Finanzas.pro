@@ -416,14 +416,18 @@ label, [data-testid="stWidgetLabel"] p { color: #FFFFFF !important; font-weight:
   .stButton > button { height: 3.2em !important; font-size: 1rem !important; }
 }
 
-/* Ocultar toda la UI de Streamlit Cloud */
+/* Nuke total a los elementos de Streamlit */
 #MainMenu { visibility: hidden !important; }
-header { visibility: hidden !important; }
+header { visibility: hidden !important; display: none !important; }
 footer { visibility: hidden !important; display: none !important; }
 .stAppDeployButton { display: none !important; }
 [data-testid="stStatusWidget"] { visibility: hidden !important; display: none !important; }
 [data-testid="stDecoration"] { display: none !important; }
 [data-testid="stToolbar"] { display: none !important; }
+[data-testid="stHeader"] { display: none !important; }
+#viewer-badge { display: none !important; }
+.viewerBadge_container__1QSob { display: none !important; }
+.viewerBadge_link__1S137 { display: none !important; }
 
 /* Eliminar hueco superior que deja el header oculto */
 .block-container { padding-top: 1rem !important; }
