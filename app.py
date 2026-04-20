@@ -798,55 +798,6 @@ with menu[1]:
         )
         k5.metric("📬 Pendientes", f"{n_pend}")
 
-        # -------- GRAFICO BARRAS: ACTIVIDAD MENSUAL --------
-        cur.execute("""
-            SELECT
-                TO_CHAR(DATE_TRUNC('month', fecha_creacion), 'YYYY-MM') AS mes,
-                COALESCE(SUM(CASE WHEN prestamista_id = %(uid)s THEN monto ELSE 0 END), 0) AS prestado,
-                COALESCE(SUM(CASE WHEN prestatario_id = %(uid)s THEN monto ELSE 0 END), 0) AS pedido
-            FROM prestamos
-            WHERE (prestamista_id = %(uid)s OR prestatario_id = %(uid)s)
-              AND estado IN ('aprobado', 'pagado')
-              AND fecha_creacion >= NOW() - INTERVAL '12 months'
-            GROUP BY mes
-            ORDER BY mes
-        """, {"uid": st.session_state.user_id})
-        rows_chart = cur.fetchall()
-
-        if rows_chart:
-            df_chart = pd.DataFrame([dict(r) for r in rows_chart])
-            df_chart["prestado"] = df_chart["prestado"].astype(float)
-            df_chart["pedido"]   = df_chart["pedido"].astype(float)
-
-            fig_bar = go.Figure()
-            fig_bar.add_trace(go.Bar(
-                x=df_chart["mes"], y=df_chart["prestado"],
-                name="Prestado (salida)",
-                marker_color="#00E5FF",
-                hovertemplate="<b>%{x}</b><br>Prestado: %{y:,.0f} Gs.<extra></extra>",
-            ))
-            fig_bar.add_trace(go.Bar(
-                x=df_chart["mes"], y=df_chart["pedido"],
-                name="Pedido (entrada)",
-                marker_color="#00E676",
-                hovertemplate="<b>%{x}</b><br>Pedido: %{y:,.0f} Gs.<extra></extra>",
-            ))
-            fig_bar.update_layout(
-                title=dict(text="📊 Actividad mensual de préstamos (12 meses)", font=dict(color="#FFFFFF", size=15)),
-                barmode="group",
-                height=320,
-                margin=dict(l=10, r=10, t=50, b=10),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(family="Inter", color="#FFFFFF"),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                            font=dict(color="#FFFFFF")),
-                hovermode="x unified",
-            )
-            fig_bar.update_xaxes(showgrid=False, color="#FFFFFF", tickangle=-30)
-            fig_bar.update_yaxes(showgrid=True, gridcolor="#1E1E1E", color="#FFFFFF", tickformat=",.0f")
-            st.plotly_chart(fig_bar, use_container_width=True)
-
         st.divider()
 
         cur.execute(
