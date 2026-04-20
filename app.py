@@ -573,79 +573,117 @@ def _revocar_token(token: str):
         finally:
             cur.close()
 
+# ---- Pantalla de bloqueo mientras el CookieManager carga ----
+_LOCK_SCREEN = """
+<div style="position:fixed;top:0;left:0;width:100vw;height:100vh;
+  background:#000000;z-index:99999;display:flex;align-items:center;
+  justify-content:center;flex-direction:column;gap:1rem;">
+  <div style="width:44px;height:44px;border:3px solid #1E88E5;
+    border-top-color:transparent;border-radius:50%;
+    animation:_lspin .7s linear infinite;"></div>
+  <p style="color:#9BA3AF;font-family:Inter,sans-serif;font-size:.85rem;
+    letter-spacing:.3px;margin:0;">Buscando sesión guardada...</p>
+</div>
+<style>@keyframes _lspin{to{transform:rotate(360deg)}}</style>
+"""
+
 # =========================================================
-# 5. AUTENTICACION — lazy, sin bloqueos
+# 5. AUTENTICACION — cookie-first con espera garantizada
 # =========================================================
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
+# Flujo de 2 ciclos:
+#   Ciclo 1 (F5 / sesion nueva): CookieManager aun no cargo el valor del
+#     navegador. Mostrar lock screen, sleep 0.8s, rerun para dar tiempo
+#     al componente React a comunicar la cookie al servidor.
+#   Ciclo 2+: CookieManager ya respondio. Leer token, validar en DB,
+#     auto-login o mostrar formulario de login.
+# =========================================================
+if "logged_in"       not in st.session_state: st.session_state.logged_in       = False
+if "_cookie_checked" not in st.session_state: st.session_state._cookie_checked = False
 
-# Intento de auto-login via cookie — solo toca la DB si hay token presente
+_auth_slot = st.empty()
+
 if not st.session_state.logged_in:
-    try:
-        _token = _cookie_mgr.get("session_pro_py")
-        if _token:
-            with st.spinner("Validando acceso..."):
-                _user = _validar_token(_token)
-            if _user:
-                st.session_state.logged_in         = True
-                st.session_state.user_id           = _user["id"]
-                st.session_state.username          = _user["username"]
-                st.session_state.role              = _user["role"]
-                st.session_state["_session_token"] = _token
-                st.rerun()
-            else:
-                try: _cookie_mgr.delete("session_pro_py")
-                except: pass
-    except Exception:
-        for _k in ["logged_in", "user_id", "username", "role", "_session_token"]:
-            st.session_state.pop(_k, None)
-        st.session_state.logged_in = False
 
-# ---- Formulario de login (se muestra si no hay sesion activa) ----
-if not st.session_state.logged_in:
-    st.markdown("""
-    <div class="login-wrap">
-      <div class="login-card">
-        <h1>🚀 Finanzas Pro PY</h1>
-        <p>Acceso restringido &middot; Solo usuarios autorizados</p>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    if not st.session_state._cookie_checked:
+        # --- Ciclo 1: esperar al CookieManager ---
+        print("[AUTH] Buscando sesion guardada...")
+        _auth_slot.markdown(_LOCK_SCREEN, unsafe_allow_html=True)
+        st.session_state._cookie_checked = True
+        time.sleep(0.8)
+        st.rerun()
 
-    _, col_c, _ = st.columns([1, 2, 1])
-    with col_c:
-        u = st.text_input("Usuario", key="l_u")
-        p = st.text_input("Contraseña", type="password", key="l_p")
-        if st.button("🔐 Entrar", use_container_width=True):
-            conn_l, cur_l = get_cursor()
-            if cur_l:
-                try:
-                    cur_l.execute("SELECT * FROM usuarios WHERE username = %s", (u,))
-                    user = cur_l.fetchone()
-                    if user and bcrypt.checkpw(p.encode(), user["password"].encode()):
-                        st.session_state.logged_in = True
-                        st.session_state.user_id   = user["id"]
-                        st.session_state.username  = user["username"]
-                        st.session_state.role      = (user["role"] if "role" in user.keys() else "user") or "user"
-                        _tok = _crear_token(user["id"])
-                        st.session_state["_session_token"] = _tok
-                        try:
-                            _cookie_mgr.set(
-                                "session_pro_py", _tok,
-                                expires_at=datetime.now() + timedelta(days=7)
-                            )
-                        except Exception:
-                            pass
-                        st.rerun()
-                    else:
-                        st.error("❌ Credenciales incorrectas")
-                except Exception as _le:
-                    st.error(f"Error al iniciar sesión: {_le}")
-                finally:
-                    cur_l.close()
-            else:
-                st.error("⚠️ Sin conexión a la base de datos. Recargá la página.")
-        st.caption("Sin cuenta? Pedile al administrador que te registre.")
+    # --- Ciclo 2+: leer y validar cookie ---
+    _token = _cookie_mgr.get("session_pro_py")
+    print(f"[AUTH] Token: {'encontrado' if _token else 'no encontrado'}")
+
+    if _token:
+        _auth_slot.markdown(_LOCK_SCREEN, unsafe_allow_html=True)
+        try:
+            _user = _validar_token(_token)
+        except Exception as _e:
+            print(f"[AUTH] Error validando token: {_e}")
+            _user = None
+
+        if _user:
+            print(f"[AUTH] Sesion valida — entrando como '{_user['username']}'")
+            st.session_state.logged_in         = True
+            st.session_state.user_id           = _user["id"]
+            st.session_state.username          = _user["username"]
+            st.session_state.role              = _user["role"]
+            st.session_state["_session_token"] = _token
+            _auth_slot.empty()
+            st.rerun()
+        else:
+            print("[AUTH] Token invalido — borrando cookie")
+            try: _cookie_mgr.delete("session_pro_py")
+            except: pass
+
+    # Sin sesion valida — mostrar formulario de login
+    _auth_slot.empty()
+    with _auth_slot.container():
+        st.markdown("""
+        <div class="login-wrap">
+          <div class="login-card">
+            <h1>🚀 Finanzas Pro PY</h1>
+            <p>Acceso restringido &middot; Solo usuarios autorizados</p>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        _, col_c, _ = st.columns([1, 2, 1])
+        with col_c:
+            u = st.text_input("Usuario", key="l_u")
+            p = st.text_input("Contraseña", type="password", key="l_p")
+            if st.button("🔐 Entrar", use_container_width=True):
+                conn_l, cur_l = get_cursor()
+                if cur_l:
+                    try:
+                        cur_l.execute("SELECT * FROM usuarios WHERE username = %s", (u,))
+                        user = cur_l.fetchone()
+                        if user and bcrypt.checkpw(p.encode(), user["password"].encode()):
+                            st.session_state.logged_in = True
+                            st.session_state.user_id   = user["id"]
+                            st.session_state.username  = user["username"]
+                            st.session_state.role      = (user["role"] if "role" in user.keys() else "user") or "user"
+                            _tok = _crear_token(user["id"])
+                            st.session_state["_session_token"] = _tok
+                            try:
+                                _cookie_mgr.set(
+                                    "session_pro_py", _tok,
+                                    expires_at=datetime.now() + timedelta(days=7)
+                                )
+                            except Exception:
+                                pass
+                            st.rerun()
+                        else:
+                            st.error("❌ Credenciales incorrectas")
+                    except Exception as _le:
+                        st.error(f"Error al iniciar sesión: {_le}")
+                    finally:
+                        cur_l.close()
+                else:
+                    st.error("⚠️ Sin conexión a la base de datos. Recargá la página.")
+            st.caption("Sin cuenta? Pedile al administrador que te registre.")
 
     st.stop()  # Impide que el dashboard renderice sin sesion
 
@@ -673,7 +711,7 @@ if st.sidebar.button("Cerrar Sesión"):
     if _t:
         _revocar_token(_t)
     _cookie_mgr.delete("session_pro_py")
-    for k in ["logged_in", "user_id", "username", "role", "_session_token"]:
+    for k in ["logged_in", "user_id", "username", "role", "_session_token", "_cookie_checked"]:
         st.session_state.pop(k, None)
     st.rerun()
 
