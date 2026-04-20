@@ -203,35 +203,33 @@ def calcular_prestamo(capital, tasa_mensual_pct, plazo_meses, sistema="Francés"
 # =========================================================
 # 3. INICIALIZACIÓN DE TABLAS (idempotente)
 # =========================================================
-def init_db(retries: int = 3, delay: float = 2.0):
-    """Inicializa tablas. Reintenta hasta `retries` veces ante fallos de conexión."""
-    for attempt in range(1, retries + 1):
+@st.cache_resource
+def _init_db_once() -> bool:
+    """
+    Inicializa tablas UNA sola vez por proceso de servidor (cache_resource).
+    Las llamadas siguientes devuelven True inmediatamente sin tocar la DB.
+    """
+    for attempt in range(1, 4):
         conn, cur = get_cursor()
         if not cur:
-            if attempt < retries:
-                time.sleep(delay)
+            if attempt < 3:
+                time.sleep(2)
                 _get_engine().dispose()
                 continue
-            st.error("No se pudo inicializar la base de datos tras varios intentos.")
-            return
+            return False
         try:
             _init_tablas(conn, cur)
-            return
-        except Exception as e:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            if attempt < retries:
-                time.sleep(delay)
+            return True
+        except Exception:
+            try: conn.rollback()
+            except: pass
+            if attempt < 3:
+                time.sleep(2)
                 _get_engine().dispose()
-            else:
-                st.error(f"Error al inicializar tablas tras {retries} intentos: {e}")
         finally:
-            try:
-                cur.close()
-            except Exception:
-                pass
+            try: cur.close()
+            except: pass
+    return False
 
 def _init_tablas(conn, cur):
     try:
@@ -333,7 +331,7 @@ def _init_tablas(conn, cur):
 # 4. CONFIGURACIÓN + CSS PREMIUM (FinTech World Class)
 # =========================================================
 st.set_page_config(page_title="Finanzas Pro PY", layout="wide", page_icon="📈")
-init_db()
+_init_db_once()  # cached: corre solo la primera vez que arranca el servidor
 
 # --- CSS Premium ----------------------------------------------------------
 # Se usa <style>...</style> con triple-single-quote para evitar que Streamlit
@@ -508,15 +506,14 @@ footer { visibility: hidden !important; display: none !important; }
 """
 st.markdown(_CSS, unsafe_allow_html=True)
 
-# Heartbeat JS: ping cada 2 minutos para evitar que Streamlit Cloud
-# ponga la sesion en sleep y corte el WebSocket.
+# Heartbeat JS: ping cada 5 minutos — suficiente para mantener el WebSocket activo
 st.markdown("""
 <script>
 (function(){
   setInterval(function(){
     try { fetch(window.location.href,{method:'HEAD',cache:'no-cache',mode:'no-cors'}); }
     catch(e){}
-  }, 120000);
+  }, 300000);
 })();
 </script>
 """, unsafe_allow_html=True)
@@ -576,42 +573,19 @@ def _revocar_token(token: str):
         finally:
             cur.close()
 
-# ---- Overlay de carga: cubre TODA la pantalla mientras se verifica la sesion.
-# position:fixed + z-index alto garantiza que ningun elemento de Streamlit
-# sea visible durante el chequeo, eliminando el parpadeo del formulario de login.
-_LOADING_OVERLAY = """
-<div id="auth-overlay" style="
-  position:fixed;top:0;left:0;width:100vw;height:100vh;
-  background:#000000;z-index:99999;
-  display:flex;align-items:center;justify-content:center;
-  flex-direction:column;gap:1.2rem;">
-  <div style="
-    width:52px;height:52px;
-    border:4px solid #1E88E5;
-    border-top-color:transparent;
-    border-radius:50%;
-    animation:_aspin .75s linear infinite;">
-  </div>
-  <span style="color:#9BA3AF;font-family:Inter,sans-serif;
-               font-size:.9rem;letter-spacing:.4px;">
-    Verificando sesión...
-  </span>
-</div>
-<style>@keyframes _aspin{to{transform:rotate(360deg)}}</style>
-"""
-
 # =========================================================
-# 5. AUTENTICACION — simple y estable (prioridad: demo)
+# 5. AUTENTICACION — lazy, sin bloqueos
 # =========================================================
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-# Intento unico de auto-login via cookie (sin esperas ni reruns)
+# Intento de auto-login via cookie — solo toca la DB si hay token presente
 if not st.session_state.logged_in:
     try:
         _token = _cookie_mgr.get("session_pro_py")
         if _token:
-            _user = _validar_token(_token)
+            with st.spinner("Validando acceso..."):
+                _user = _validar_token(_token)
             if _user:
                 st.session_state.logged_in         = True
                 st.session_state.user_id           = _user["id"]
@@ -623,7 +597,6 @@ if not st.session_state.logged_in:
                 try: _cookie_mgr.delete("session_pro_py")
                 except: pass
     except Exception:
-        # Si falla cualquier cosa, resetear y mostrar login limpio
         for _k in ["logged_in", "user_id", "username", "role", "_session_token"]:
             st.session_state.pop(_k, None)
         st.session_state.logged_in = False
