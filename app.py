@@ -562,6 +562,10 @@ if not st.session_state.logged_in:
 # =========================================================
 # 6. DASHBOARD - solo alcanzable si logged_in = True
 # =========================================================
+# Estado global de confirmacion de borrado: {table, id, desc} o None
+if "_confirm_del" not in st.session_state:
+    st.session_state._confirm_del = None
+
 # Asegurarse de tener role (compatibilidad sesiones antiguas)
 if "role" not in st.session_state:
     conn_r, cur_r = get_cursor()
@@ -707,17 +711,52 @@ with menu[0]:
         with col_t:
             st.subheader("📋 Últimos Movimientos")
             cur.execute("""
-                SELECT fecha, tipo, COALESCE(categoria,'-') AS categoria, monto, descripcion
+                SELECT id, fecha, tipo, COALESCE(categoria,'-') AS categoria,
+                       monto, COALESCE(descripcion,'') AS descripcion
                 FROM movimientos WHERE user_id = %s
                 ORDER BY fecha DESC, id DESC LIMIT 10
             """, (st.session_state.user_id,))
             ultimos = cur.fetchall()
-            if ultimos:
-                df_u = pd.DataFrame([dict(r) for r in ultimos])
-                df_u["monto"] = df_u["monto"].apply(lambda v: fmt_gs(v))
+            if not ultimos:
+                st.info("Sin movimientos todavía.")
+            elif not is_admin:
+                df_u = pd.DataFrame([{k: v for k, v in dict(r).items() if k != "id"} for r in ultimos])
+                df_u["monto"] = df_u["monto"].apply(fmt_gs)
                 st.dataframe(df_u, use_container_width=True, hide_index=True)
             else:
-                st.info("Sin movimientos todavía.")
+                # Admin: tabla con botón de borrado por fila
+                hc1, hc2, hc3, hc4, hc5 = st.columns([2, 2, 3, 3, 1])
+                hc1.caption("**Fecha**"); hc2.caption("**Tipo**")
+                hc3.caption("**Categoría**"); hc4.caption("**Monto**"); hc5.caption("**✕**")
+                st.divider()
+                for r in ultimos:
+                    _rid = r["id"]
+                    rc1, rc2, rc3, rc4, rc5 = st.columns([2, 2, 3, 3, 1])
+                    rc1.write(str(r["fecha"]))
+                    rc2.write(r["tipo"])
+                    rc3.write(r["categoria"])
+                    rc4.write(fmt_gs(r["monto"]))
+                    if rc5.button("🗑️", key=f"del_mov_{_rid}", use_container_width=True):
+                        st.session_state._confirm_del = {
+                            "table": "movimientos", "id": _rid,
+                            "desc": f"{r['tipo']} · {fmt_gs(r['monto'])} · {r['fecha']}"
+                        }
+                        st.rerun()
+                    _cd = st.session_state._confirm_del
+                    if _cd and _cd["table"] == "movimientos" and _cd["id"] == _rid:
+                        st.warning(f"¿Eliminar: **{_cd['desc']}**?")
+                        b1, b2 = st.columns(2)
+                        if b1.button("✅ Confirmar", key=f"ok_mov_{_rid}", use_container_width=True):
+                            try:
+                                cur.execute("DELETE FROM movimientos WHERE id = %s", (_rid,))
+                                conn.commit()
+                                st.session_state._confirm_del = None
+                                st.rerun()
+                            except Exception as _de:
+                                conn.rollback(); st.error(f"Error: {_de}")
+                        if b2.button("❌ Cancelar", key=f"cancel_mov_{_rid}", use_container_width=True):
+                            st.session_state._confirm_del = None
+                            st.rerun()
     finally:
         cur.close()
 
@@ -970,14 +1009,28 @@ with menu[1]:
                                 except Exception as e:
                                     conn.rollback()
                                     st.error(f"Error: {e}")
-                            if is_admin and _cols[2].button("🗑️ Eliminar", key=f"del_pend_{p_rec['id']}", use_container_width=True):
-                                try:
-                                    cur.execute("DELETE FROM prestamos WHERE id = %s", (p_rec['id'],))
-                                    conn.commit()
+                            if is_admin:
+                                if _cols[2].button("🗑️ Eliminar", key=f"del_pend_{p_rec['id']}", use_container_width=True):
+                                    st.session_state._confirm_del = {
+                                        "table": "prestamos", "id": p_rec["id"],
+                                        "desc": f"Préstamo pendiente #{p_rec['id']} · {fmt_gs(p_rec['monto'])}"
+                                    }
                                     st.rerun()
-                                except Exception as e:
-                                    conn.rollback()
-                                    st.error(f"Error: {e}")
+                                _cd = st.session_state._confirm_del
+                                if _cd and _cd["table"] == "prestamos" and _cd["id"] == p_rec["id"]:
+                                    st.warning(f"¿Eliminar: **{_cd['desc']}**?")
+                                    _b1, _b2 = st.columns(2)
+                                    if _b1.button("✅ Confirmar", key=f"ok_pend_{p_rec['id']}", use_container_width=True):
+                                        try:
+                                            cur.execute("DELETE FROM prestamos WHERE id = %s", (p_rec["id"],))
+                                            conn.commit()
+                                            st.session_state._confirm_del = None
+                                            st.rerun()
+                                        except Exception as _de:
+                                            conn.rollback(); st.error(f"Error: {_de}")
+                                    if _b2.button("❌ Cancelar", key=f"cancel_pend_{p_rec['id']}", use_container_width=True):
+                                        st.session_state._confirm_del = None
+                                        st.rerun()
 
         # ---------------- PRÉSTAMOS ACTIVOS ----------------
         st.divider()
@@ -1032,13 +1085,26 @@ with menu[1]:
                             st.error(f"Error: {e}")
                     if is_admin:
                         if btn_cols[1].button("🗑️ Eliminar", key=f"del_act_{row['id']}", use_container_width=True):
-                            try:
-                                cur.execute("DELETE FROM prestamos WHERE id = %s", (row['id'],))
-                                conn.commit()
+                            st.session_state._confirm_del = {
+                                "table": "prestamos", "id": row["id"],
+                                "desc": f"Préstamo activo #{row['id']} · {fmt_gs(row['monto'])}"
+                            }
+                            st.rerun()
+                        _cd = st.session_state._confirm_del
+                        if _cd and _cd["table"] == "prestamos" and _cd["id"] == row["id"]:
+                            st.warning(f"¿Eliminar: **{_cd['desc']}**?")
+                            _b1, _b2 = st.columns(2)
+                            if _b1.button("✅ Confirmar", key=f"ok_act_{row['id']}", use_container_width=True):
+                                try:
+                                    cur.execute("DELETE FROM prestamos WHERE id = %s", (row["id"],))
+                                    conn.commit()
+                                    st.session_state._confirm_del = None
+                                    st.rerun()
+                                except Exception as _de:
+                                    conn.rollback(); st.error(f"Error: {_de}")
+                            if _b2.button("❌ Cancelar", key=f"cancel_act_{row['id']}", use_container_width=True):
+                                st.session_state._confirm_del = None
                                 st.rerun()
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"Error: {e}")
 
         # ---------------- PRÉSTAMOS PAGADOS (historial) ----------------
         st.divider()
@@ -1068,13 +1134,26 @@ with menu[1]:
                     st.write(f"**Capital:** {fmt_gs(pag['monto'])} | **Total pagado:** {fmt_gs(pag['total_pagar'] or pag['monto'])}")
                     if is_admin:
                         if st.button("🗑️ Eliminar registro", key=f"del_pag_{pag['id']}", use_container_width=True):
-                            try:
-                                cur.execute("DELETE FROM prestamos WHERE id = %s", (pag['id'],))
-                                conn.commit()
+                            st.session_state._confirm_del = {
+                                "table": "prestamos", "id": pag["id"],
+                                "desc": f"Historial #{pag['id']} · {fmt_gs(pag['total_pagar'] or pag['monto'])}"
+                            }
+                            st.rerun()
+                        _cd = st.session_state._confirm_del
+                        if _cd and _cd["table"] == "prestamos" and _cd["id"] == pag["id"]:
+                            st.warning(f"¿Eliminar: **{_cd['desc']}**?")
+                            _b1, _b2 = st.columns(2)
+                            if _b1.button("✅ Confirmar", key=f"ok_pag_{pag['id']}", use_container_width=True):
+                                try:
+                                    cur.execute("DELETE FROM prestamos WHERE id = %s", (pag["id"],))
+                                    conn.commit()
+                                    st.session_state._confirm_del = None
+                                    st.rerun()
+                                except Exception as _de:
+                                    conn.rollback(); st.error(f"Error: {_de}")
+                            if _b2.button("❌ Cancelar", key=f"cancel_pag_{pag['id']}", use_container_width=True):
+                                st.session_state._confirm_del = None
                                 st.rerun()
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"Error: {e}")
 
     finally:
         cur.close()
@@ -1151,7 +1230,6 @@ with menu[2]:
             for r in invs:
                 capital = Decimal(str(r['monto']))
                 roi_anual = Decimal(str(r['roi_esperado'] or 0)) / Decimal("100")
-                # GGR mensual compuesto equivalente: (1+roi_anual)^(1/12) - 1
                 if roi_anual > -1:
                     ggr_mensual = (Decimal("1") + roi_anual) ** (Decimal("1") / Decimal("12")) - Decimal("1")
                 else:
@@ -1159,16 +1237,51 @@ with menu[2]:
                 valor_12 = capital * (Decimal("1") + roi_anual)
                 ganancia = valor_12 - capital
                 filas.append({
+                    "_id": r["id"],
                     "Activo": r['nombre'],
                     "Capital": fmt_gs(capital),
                     "ROI Anual": f"{roi_anual*100:.2f}%",
                     "GGR Mensual": f"{ggr_mensual*100:.3f}%",
                     "Valor a 12 m.": fmt_gs(valor_12),
                     "Ganancia": fmt_gs(ganancia),
-                    "Fecha": r['fecha'],
+                    "Fecha": str(r['fecha']),
                 })
-            df_inv = pd.DataFrame(filas)
-            st.dataframe(df_inv, use_container_width=True, hide_index=True)
+
+            if not is_admin:
+                df_inv = pd.DataFrame([{k: v for k, v in f.items() if k != "_id"} for f in filas])
+                st.dataframe(df_inv, use_container_width=True, hide_index=True)
+            else:
+                # Admin: tabla con botón de borrado por fila
+                _cols_h = st.columns([3, 3, 2, 2, 3, 3, 2, 1])
+                for _h, _lbl in zip(_cols_h, ["Activo","Capital","ROI","GGR","12m","Ganancia","Fecha","✕"]):
+                    _h.caption(f"**{_lbl}**")
+                st.divider()
+                for f in filas:
+                    _rid = f["_id"]
+                    _rc = st.columns([3, 3, 2, 2, 3, 3, 2, 1])
+                    for _c, _k in zip(_rc[:-1], ["Activo","Capital","ROI Anual","GGR Mensual","Valor a 12 m.","Ganancia","Fecha"]):
+                        _c.write(f[_k])
+                    if _rc[-1].button("🗑️", key=f"del_inv_{_rid}", use_container_width=True):
+                        st.session_state._confirm_del = {
+                            "table": "inversiones", "id": _rid,
+                            "desc": f"{f['Activo']} · {f['Capital']}"
+                        }
+                        st.rerun()
+                    _cd = st.session_state._confirm_del
+                    if _cd and _cd["table"] == "inversiones" and _cd["id"] == _rid:
+                        st.warning(f"¿Eliminar: **{_cd['desc']}**?")
+                        _b1, _b2 = st.columns(2)
+                        if _b1.button("✅ Confirmar", key=f"ok_inv_{_rid}", use_container_width=True):
+                            try:
+                                cur.execute("DELETE FROM inversiones WHERE id = %s", (_rid,))
+                                conn.commit()
+                                st.session_state._confirm_del = None
+                                st.rerun()
+                            except Exception as _de:
+                                conn.rollback(); st.error(f"Error: {_de}")
+                        if _b2.button("❌ Cancelar", key=f"cancel_inv_{_rid}", use_container_width=True):
+                            st.session_state._confirm_del = None
+                            st.rerun()
 
             # -------- GRÁFICO PROYECCIÓN MENSUAL ACUMULADA --------
             st.subheader("📉 Proyección de valor (12 meses)")
