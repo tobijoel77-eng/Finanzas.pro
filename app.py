@@ -1438,6 +1438,61 @@ with menu[3]:
                                     conn.rollback()
                                     st.error(f"Error: {e}")
 
+                # ---- Controles de administrador ----
+                if is_admin:
+                    with st.expander("🔧 Herramientas de administrador", expanded=False):
+                        adm_c1, adm_c2 = st.columns(2)
+
+                        # -- Corregir saldo --
+                        with adm_c1:
+                            with st.form(f"corr_{m['id']}", clear_on_submit=True):
+                                st.caption("**Ajustar saldo** (positivo suma, negativo resta)")
+                                ajuste = st.number_input(
+                                    "Monto de ajuste (Gs.)",
+                                    value=0, step=10000,
+                                    key=f"adj_{m['id']}"
+                                )
+                                if st.form_submit_button("🔧 Aplicar ajuste", use_container_width=True):
+                                    if ajuste == 0:
+                                        st.warning("Ingresá un valor distinto de 0.")
+                                    else:
+                                        try:
+                                            cur.execute(
+                                                "UPDATE ahorros SET actual = GREATEST(0, actual + %s) WHERE id = %s",
+                                                (ajuste, m['id'])
+                                            )
+                                            conn.commit()
+                                            st.rerun()
+                                        except Exception as _ae:
+                                            conn.rollback()
+                                            st.error(f"Error: {_ae}")
+
+                        # -- Eliminar meta --
+                        with adm_c2:
+                            st.caption("**Eliminar meta completa**")
+                            st.write(f"Meta: **{m['meta_nombre']}** · saldo {fmt_gs(actual_m)}")
+                            if st.button("🗑️ Eliminar meta", key=f"del_meta_{m['id']}", use_container_width=True):
+                                st.session_state._confirm_del = {
+                                    "table": "ahorros", "id": m["id"],
+                                    "desc": f"{m['meta_nombre']} · {fmt_gs(actual_m)}"
+                                }
+                                st.rerun()
+                            _cd = st.session_state._confirm_del
+                            if _cd and _cd["table"] == "ahorros" and _cd["id"] == m["id"]:
+                                st.warning(f"¿Eliminar: **{_cd['desc']}**?")
+                                _b1, _b2 = st.columns(2)
+                                if _b1.button("✅ Confirmar", key=f"ok_meta_{m['id']}", use_container_width=True):
+                                    try:
+                                        cur.execute("DELETE FROM ahorros WHERE id = %s", (m["id"],))
+                                        conn.commit()
+                                        st.session_state._confirm_del = None
+                                        st.rerun()
+                                    except Exception as _de:
+                                        conn.rollback(); st.error(f"Error: {_de}")
+                                if _b2.button("❌ Cancelar", key=f"cancel_meta_{m['id']}", use_container_width=True):
+                                    st.session_state._confirm_del = None
+                                    st.rerun()
+
                 st.divider()
     finally:
         cur.close()
