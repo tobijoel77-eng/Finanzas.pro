@@ -5,4 +5,3 @@ pandas
 bcrypt
 python-dateutil
 plotly
-extra-streamlit-components
