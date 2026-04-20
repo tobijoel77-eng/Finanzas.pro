@@ -503,6 +503,55 @@ footer { visibility: hidden !important; display: none !important; }
 """
 st.markdown(_CSS, unsafe_allow_html=True)
 
+# Estilo + detector para botones de papelera (🗑️)
+# JS: agrega clase 'trash-btn' a cualquier boton cuyo texto contenga 🗑️.
+# MutationObserver asegura que se aplica cada vez que Streamlit re-renderiza.
+st.markdown("""
+<style>
+button.trash-btn {
+  background: transparent !important;
+  border: 1px solid #333333 !important;
+  color: #666666 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  transition: background .15s ease, border-color .15s ease, color .15s ease !important;
+}
+button.trash-btn:hover {
+  background: #FF4B4B !important;
+  border-color: #FF4B4B !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 0 0 2px rgba(255,75,75,.35) !important;
+}
+button.trash-btn:focus,
+button.trash-btn:focus-visible,
+button.trash-btn:active {
+  background: #e03e3e !important;
+  border-color: #e03e3e !important;
+  color: #FFFFFF !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+/* Centrar el boton dentro de su columna cuando es solo icono */
+[data-testid="stButton"]:has(button.trash-btn) {
+  display: flex;
+  justify-content: center;
+}
+</style>
+<script>
+(function(){
+  function tag(){
+    document.querySelectorAll('button').forEach(function(b){
+      if(b.textContent.trim().startsWith('\uD83D\uDDD1')){
+        b.classList.add('trash-btn');
+      }
+    });
+  }
+  tag();
+  new MutationObserver(tag).observe(document.body,{childList:true,subtree:true});
+})();
+</script>
+""", unsafe_allow_html=True)
+
 # Heartbeat JS: ping cada 5 minutos — suficiente para mantener el WebSocket activo
 st.markdown("""
 <script>
@@ -736,7 +785,7 @@ with menu[0]:
                     rc2.write(r["tipo"])
                     rc3.write(r["categoria"])
                     rc4.write(fmt_gs(r["monto"]))
-                    if rc5.button("🗑️", key=f"del_mov_{_rid}", use_container_width=True):
+                    if rc5.button("🗑️", key=f"del_mov_{_rid}", use_container_width=False):
                         st.session_state._confirm_del = {
                             "table": "movimientos", "id": _rid,
                             "desc": f"{r['tipo']} · {fmt_gs(r['monto'])} · {r['fecha']}"
@@ -1212,7 +1261,7 @@ with menu[2]:
                     _rc = st.columns([3, 3, 2, 2, 3, 3, 2, 1])
                     for _c, _k in zip(_rc[:-1], ["Activo","Capital","ROI Anual","GGR Mensual","Valor a 12 m.","Ganancia","Fecha"]):
                         _c.write(f[_k])
-                    if _rc[-1].button("🗑️", key=f"del_inv_{_rid}", use_container_width=True):
+                    if _rc[-1].button("🗑️", key=f"del_inv_{_rid}", use_container_width=False):
                         st.session_state._confirm_del = {
                             "table": "inversiones", "id": _rid,
                             "desc": f"{f['Activo']} · {f['Capital']}"
