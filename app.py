@@ -588,33 +588,34 @@ _LOCK_SCREEN = """
 """
 
 # =========================================================
-# 5. AUTENTICACION — cookie-first con espera garantizada
+# 5. AUTENTICACION — cookie-first, guardia nativa del componente
 # =========================================================
-# Flujo de 2 ciclos:
-#   Ciclo 1 (F5 / sesion nueva): CookieManager aun no cargo el valor del
-#     navegador. Mostrar lock screen, sleep 0.8s, rerun para dar tiempo
-#     al componente React a comunicar la cookie al servidor.
-#   Ciclo 2+: CookieManager ya respondio. Leer token, validar en DB,
-#     auto-login o mostrar formulario de login.
+# _cookie_mgr.cookies == None  →  React aun no comunico los valores al servidor
+# _cookie_mgr.cookies == {}    →  Componente listo, sin cookies en el navegador
+# _cookie_mgr.cookies == {...} →  Componente listo, con cookies disponibles
+#
+# Flujo F5:
+#   Render 1: cookies is None  → lock screen + sleep(0.5) + rerun
+#   Render 2: cookies is dict  → leer token → validar DB → login o dashboard
 # =========================================================
-if "logged_in"       not in st.session_state: st.session_state.logged_in       = False
-if "_cookie_checked" not in st.session_state: st.session_state._cookie_checked = False
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
 _auth_slot = st.empty()
 
 if not st.session_state.logged_in:
 
-    if not st.session_state._cookie_checked:
-        # --- Ciclo 1: esperar al CookieManager ---
+    # Guardia directa: si el componente aun no cargo, esperar
+    if _cookie_mgr.cookies is None:
         print("[AUTH] Buscando sesion guardada...")
         _auth_slot.markdown(_LOCK_SCREEN, unsafe_allow_html=True)
-        st.session_state._cookie_checked = True
-        time.sleep(0.8)
+        time.sleep(0.5)
         st.rerun()
 
-    # --- Ciclo 2+: leer y validar cookie ---
+    # Componente listo — leer token
     _token = _cookie_mgr.get("session_pro_py")
-    print(f"[AUTH] Token: {'encontrado' if _token else 'no encontrado'}")
+    _tok_log = (_token[:8] + "...") if _token else "ninguno"
+    print(f"[AUTH] Token detectado: {_tok_log}")
 
     if _token:
         _auth_slot.markdown(_LOCK_SCREEN, unsafe_allow_html=True)
@@ -639,6 +640,7 @@ if not st.session_state.logged_in:
             except: pass
 
     # Sin sesion valida — mostrar formulario de login
+    print("[AUTH] Mostrando login")
     _auth_slot.empty()
     with _auth_slot.container():
         st.markdown("""
@@ -711,7 +713,7 @@ if st.sidebar.button("Cerrar Sesión"):
     if _t:
         _revocar_token(_t)
     _cookie_mgr.delete("session_pro_py")
-    for k in ["logged_in", "user_id", "username", "role", "_session_token", "_cookie_checked"]:
+    for k in ["logged_in", "user_id", "username", "role", "_session_token"]:
         st.session_state.pop(k, None)
     st.rerun()
 
