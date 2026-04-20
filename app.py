@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import psycopg2
 from psycopg2 import extras, InterfaceError, OperationalError
@@ -503,8 +504,8 @@ footer { visibility: hidden !important; display: none !important; }
 """
 st.markdown(_CSS, unsafe_allow_html=True)
 
-# Estilo + detector para botones de papelera (🗑️)
-# JS: agrega clase 'trash-btn' a cualquier boton cuyo texto contenga 🗑️.
+# Estilo + detector para botones de papelera (trash-btn).
+# JS: agrega clase 'trash-btn' a cualquier boton cuyo texto comience con U+1F5D1.
 # MutationObserver asegura que se aplica cada vez que Streamlit re-renderiza.
 st.markdown("""
 <style>
