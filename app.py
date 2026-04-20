@@ -748,23 +748,30 @@ with menu[0]:
         st.divider()
 
         # -------- FORMULARIO NUEVO MOVIMIENTO --------
-        CATEGORIAS_EGRESO = ["Alimentación", "Transporte", "Vivienda", "Servicios",
-                             "Salud", "Educación", "Ocio", "Ropa", "Otros"]
-        CATEGORIAS_INGRESO = ["Sueldo", "Freelance", "Ventas", "Intereses", "Otros"]
+        # Diccionario de categorías por tipo
+        _CATS = {
+            "Ingreso": ["Sueldo", "Freelance", "Ventas", "Intereses", "Otros"],
+            "Egreso":  ["Vivienda", "Alimentación", "Transporte", "Salud", "Entretenimiento", "Otros"],
+        }
+        # Contador para limpiar el formulario tras guardar (cambia la key de cada widget)
+        if "_mov_n" not in st.session_state:
+            st.session_state._mov_n = 0
+        _n = st.session_state._mov_n
 
         with st.expander("➕ Registrar Nuevo Movimiento", expanded=False):
             col1, col2, col3 = st.columns(3)
             with col1:
-                tipo = st.selectbox("Tipo", ["Ingreso", "Egreso"])
-                cats = CATEGORIAS_INGRESO if tipo == "Ingreso" else CATEGORIAS_EGRESO
-                categoria = st.selectbox("Categoría", cats)
+                # key incluye _n → se resetea tras guardar
+                tipo = st.selectbox("Tipo", ["Ingreso", "Egreso"], key=f"mov_tipo_{_n}")
+                # key incluye tipo → se recrea al cambiar tipo (categorías correctas siempre)
+                categoria = st.selectbox("Categoría", _CATS[tipo], key=f"mov_cat_{tipo}_{_n}")
             with col2:
-                monto = st.number_input("Monto (Gs.)", min_value=0, step=5000)
-                fecha = st.date_input("Fecha", datetime.now())
+                monto = st.number_input("Monto (Gs.)", min_value=0, step=5000, key=f"mov_monto_{_n}")
+                fecha = st.date_input("Fecha", datetime.now(), key=f"mov_fecha_{_n}")
             with col3:
-                desc = st.text_input("Descripción")
-                st.write(""); st.write("")  # espaciado
-                if st.button("💾 Guardar Movimiento", use_container_width=True):
+                desc = st.text_input("Descripción", key=f"mov_desc_{_n}")
+                st.write(""); st.write("")
+                if st.button("💾 Guardar Movimiento", use_container_width=True, key=f"mov_btn_{_n}"):
                     if monto <= 0:
                         st.warning("El monto debe ser mayor a 0.")
                     else:
@@ -774,7 +781,7 @@ with menu[0]:
                                 (st.session_state.user_id, tipo, monto, desc, fecha, categoria)
                             )
                             conn.commit()
-                            st.success("¡Movimiento registrado!")
+                            st.session_state._mov_n += 1  # limpia el formulario
                             st.rerun()
                         except Exception as e:
                             conn.rollback()
