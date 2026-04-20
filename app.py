@@ -11,6 +11,55 @@ from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 from decimal import Decimal, ROUND_HALF_UP, getcontext
 
+# ---------- Icon constants — no literal emojis in source ----------
+ICO_LOCK       = "\U0001F510"        # 🔐
+ICO_WAVE       = "\U0001F44B"        # 👋
+ICO_SHIELD     = "\U0001F6E1\uFE0F"  # 🛡️
+ICO_USER       = "\U0001F464"        # 👤
+ICO_USERS      = "\U0001F465"        # 👥
+ICO_MONEY      = "\U0001F4B0"        # 💰
+ICO_CASH       = "\U0001F4B5"        # 💵
+ICO_SPEND      = "\U0001F4B8"        # 💸
+ICO_HANDSHAKE  = "\U0001F91D"        # 🤝
+ICO_CHART_UP   = "\U0001F4C8"        # 📈
+ICO_CHART_BAR  = "\U0001F4CA"        # 📊
+ICO_CHART_DOWN = "\U0001F4C9"        # 📉
+ICO_TARGET     = "\U0001F3AF"        # 🎯
+ICO_TRASH      = "\U0001F5D1\uFE0F"  # 🗑️
+ICO_CHECK      = "\u2705"            # ✅
+ICO_CROSS      = "\u274C"            # ❌
+ICO_PLUS       = "\u2795"            # ➕
+ICO_SAVE       = "\U0001F4BE"        # 💾
+ICO_DONUT      = "\U0001F369"        # 🍩
+ICO_CLIPBOARD  = "\U0001F4CB"        # 📋
+ICO_SEND       = "\U0001F4E4"        # 📤
+ICO_ABACUS     = "\U0001F9EE"        # 🧮
+ICO_CALENDAR   = "\U0001F4C5"        # 📅
+ICO_TROPHY     = "\U0001F3C6"        # 🏆
+ICO_WRENCH     = "\U0001F527"        # 🔧
+ICO_KEY        = "\U0001F511"        # 🔑
+ICO_ROTATE     = "\U0001F504"        # 🔄
+ICO_ROCKET     = "\U0001F680"        # 🚀
+ICO_BUILDING   = "\U0001F3E2"        # 🏢
+ICO_BRIEFCASE  = "\U0001F4BC"        # 💼
+ICO_RECEIPT    = "\U0001F9FE"        # 🧾
+ICO_BALANCE    = "\u2696\uFE0F"      # ⚖️
+ICO_MAILBOX    = "\U0001F4EC"        # 📬
+ICO_INBOX      = "\U0001F4E5"        # 📥
+ICO_NOTEPAD    = "\U0001F4DD"        # 📝
+ICO_NOTEPAD2   = "\U0001F5D2\uFE0F"  # 🗒️
+ICO_FLAG       = "\U0001F3C1"        # 🏁
+ICO_WARN       = "\u26A0\uFE0F"      # ⚠️
+ICO_UP         = "\u25B2"            # ▲
+ICO_DOWN       = "\u25BC"            # ▼
+ICO_GREEN_CIR  = "\U0001F7E2"        # 🟢
+ICO_YELLOW_CIR = "\U0001F7E1"        # 🟡
+ICO_RED_CIR    = "\U0001F534"        # 🔴
+ICO_WHITE_CIR  = "\u26AA"            # ⚪
+ICO_GREEN_HRT  = "\U0001F49A"        # 💚
+ICO_RED_HRT    = "\u2764\uFE0F"      # ❤️
+ICO_EMPTY_BOX  = "\U0001F4ED"        # 📭
+
 # Precisión alta para cálculos financieros (evita errores por float binario)
 getcontext().prec = 28
 
@@ -328,7 +377,7 @@ def _init_tablas(conn, cur):
 # =========================================================
 # 4. CONFIGURACIÓN + CSS PREMIUM (FinTech World Class)
 # =========================================================
-st.set_page_config(page_title="Finanzas Pro PY", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Finanzas Pro PY", layout="wide", page_icon=ICO_CHART_UP)
 _init_db_once()  # cached: corre solo la primera vez que arranca el servidor
 
 # --- CSS Premium ----------------------------------------------------------
@@ -504,10 +553,9 @@ footer { visibility: hidden !important; display: none !important; }
 """
 st.markdown(_CSS, unsafe_allow_html=True)
 
-# Estilo + detector para botones de papelera (trash-btn).
-# JS: agrega clase 'trash-btn' a cualquier boton cuyo texto comience con U+1F5D1.
-# MutationObserver asegura que se aplica cada vez que Streamlit re-renderiza.
-st.markdown("""
+# Raw string — backslashes NOT interpreted by Python, so \uD83D\uDDD1
+# is sent verbatim to the browser where JS parses it as the trash emoji.
+_TRASH_STYLE = r"""
 <style>
 button.trash-btn {
   background: transparent !important;
@@ -532,7 +580,6 @@ button.trash-btn:active {
   box-shadow: none !important;
   outline: none !important;
 }
-/* Centrar el boton dentro de su columna cuando es solo icono */
 [data-testid="stButton"]:has(button.trash-btn) {
   display: flex;
   justify-content: center;
@@ -551,7 +598,8 @@ button.trash-btn:active {
   new MutationObserver(tag).observe(document.body,{childList:true,subtree:true});
 })();
 </script>
-""", unsafe_allow_html=True)
+"""
+st.markdown(_TRASH_STYLE, unsafe_allow_html=True)
 
 # Heartbeat JS: ping cada 5 minutos — suficiente para mantener el WebSocket activo
 st.markdown("""
@@ -575,7 +623,7 @@ if not st.session_state.logged_in:
     st.markdown("""
     <div class="login-wrap">
       <div class="login-card">
-        <h1>🚀 Finanzas Pro PY</h1>
+        <h1>&#x1F680; Finanzas Pro PY</h1>
         <p>Acceso restringido &middot; Solo usuarios autorizados</p>
       </div>
     </div>
@@ -585,7 +633,7 @@ if not st.session_state.logged_in:
     with col_c:
         u = st.text_input("Usuario", key="l_u")
         p = st.text_input("Contraseña", type="password", key="l_p")
-        if st.button("🔐 Entrar", use_container_width=True):
+        if st.button(f"{ICO_LOCK} Entrar", use_container_width=True):
             conn_l, cur_l = get_cursor()
             if cur_l:
                 try:
@@ -598,13 +646,13 @@ if not st.session_state.logged_in:
                         st.session_state.role      = (user["role"] if "role" in user.keys() else "user") or "user"
                         st.rerun()
                     else:
-                        st.error("❌ Credenciales incorrectas")
+                        st.error(f"{ICO_CROSS} Credenciales incorrectas")
                 except Exception as _le:
                     st.error(f"Error al iniciar sesión: {_le}")
                 finally:
                     cur_l.close()
             else:
-                st.error("⚠️ Sin conexión a la base de datos. Recargá la página.")
+                st.error(f"{ICO_WARN} Sin conexión a la base de datos. Recargá la página.")
         st.caption("Sin cuenta? Pedile al administrador que te registre.")
 
     st.stop()
@@ -628,8 +676,8 @@ if "role" not in st.session_state:
 
 is_admin = st.session_state.get("role", "user") == "admin"
 
-st.sidebar.title(f"👋 {st.session_state.username}")
-rol_badge = "🛡️ Administrador" if is_admin else "👤 Usuario"
+st.sidebar.title(f"{ICO_WAVE} {st.session_state.username}")
+rol_badge = f"{ICO_SHIELD} Administrador" if is_admin else f"{ICO_USER} Usuario"
 st.sidebar.markdown(f"**{rol_badge}**")
 st.sidebar.divider()
 if st.sidebar.button("Cerrar Sesión"):
@@ -638,16 +686,21 @@ if st.sidebar.button("Cerrar Sesión"):
     st.rerun()
 
 # Pestañas: el admin ve una adicional "👥 Usuarios"
-tabs_labels = ["💰 Movimientos", "🤝 Préstamos", "📈 Inversiones", "🎯 Ahorros"]
+tabs_labels = [
+    f"{ICO_MONEY} Movimientos",
+    f"{ICO_HANDSHAKE} Préstamos",
+    f"{ICO_CHART_UP} Inversiones",
+    f"{ICO_TARGET} Ahorros",
+]
 if is_admin:
-    tabs_labels.append("👥 Usuarios")
+    tabs_labels.append(f"{ICO_USERS} Usuarios")
 menu = st.tabs(tabs_labels)
 
 # -----------------------------------------------------
 # PESTAÑA 1: MOVIMIENTOS (DASHBOARD + PLOTLY)
 # -----------------------------------------------------
 with menu[0]:
-    st.header("💰 Gestión de Caja")
+    st.header(f"{ICO_MONEY} Gestión de Caja")
 
     # -------- DASHBOARD KPIs --------
     conn, cur = get_cursor()
@@ -668,13 +721,13 @@ with menu[0]:
         saldo_neto = ingresos_tot - egresos_tot - gastos_tot
 
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("💵 Ingresos Totales",  fmt_gs(ingresos_tot))
-        k2.metric("💸 Egresos Totales",   fmt_gs(egresos_tot))
-        k3.metric("🏢 Gastos Adm.",        fmt_gs(gastos_tot))
+        k1.metric(f"{ICO_CASH} Ingresos Totales",  fmt_gs(ingresos_tot))
+        k2.metric(f"{ICO_SPEND} Egresos Totales",   fmt_gs(egresos_tot))
+        k3.metric(f"{ICO_BUILDING} Gastos Adm.",    fmt_gs(gastos_tot))
         k4.metric(
-            "📊 Balance Neto",
+            f"{ICO_CHART_BAR} Balance Neto",
             fmt_gs(saldo_neto),
-            delta=f"{'▲' if saldo_neto >= 0 else '▼'} {fmt_gs(abs(saldo_neto))}",
+            delta=f"{ICO_UP if saldo_neto >= 0 else ICO_DOWN} {fmt_gs(abs(saldo_neto))}",
             delta_color="normal" if saldo_neto >= 0 else "inverse",
         )
 
@@ -691,7 +744,7 @@ with menu[0]:
             st.session_state._mov_n = 0
         _n = st.session_state._mov_n
 
-        with st.expander("➕ Registrar Nuevo Movimiento", expanded=False):
+        with st.expander(f"{ICO_PLUS} Registrar Nuevo Movimiento", expanded=False):
             col1, col2, col3 = st.columns(3)
             with col1:
                 # key incluye _n → se resetea tras guardar
@@ -704,7 +757,7 @@ with menu[0]:
             with col3:
                 desc = st.text_input("Descripción", key=f"mov_desc_{_n}")
                 st.write(""); st.write("")
-                if st.button("💾 Guardar Movimiento", use_container_width=True, key=f"mov_btn_{_n}"):
+                if st.button(f"{ICO_SAVE} Guardar Movimiento", use_container_width=True, key=f"mov_btn_{_n}"):
                     if monto <= 0:
                         st.warning("El monto debe ser mayor a 0.")
                     else:
@@ -732,7 +785,7 @@ with menu[0]:
         col_g, col_t = st.columns([3, 2])
 
         with col_g:
-            st.subheader("🍩 Egresos por Categoría")
+            st.subheader(f"{ICO_DONUT} Egresos por Categoría")
             if egresos_cat:
                 df_cat = pd.DataFrame([dict(r) for r in egresos_cat])
                 df_cat["total"] = df_cat["total"].astype(float)
@@ -759,7 +812,7 @@ with menu[0]:
                 st.info("Registrá al menos un egreso para ver el gráfico.")
 
         with col_t:
-            st.subheader("📋 Últimos Movimientos")
+            st.subheader(f"{ICO_CLIPBOARD} Últimos Movimientos")
             cur.execute("""
                 SELECT id, fecha, tipo, COALESCE(categoria,'-') AS categoria,
                        monto, COALESCE(descripcion,'') AS descripcion
@@ -786,7 +839,7 @@ with menu[0]:
                     rc2.write(r["tipo"])
                     rc3.write(r["categoria"])
                     rc4.write(fmt_gs(r["monto"]))
-                    if rc5.button("🗑️", key=f"del_mov_{_rid}", use_container_width=False):
+                    if rc5.button(chr(0x1F5D1), key=f"del_mov_{_rid}", use_container_width=False):
                         st.session_state._confirm_del = {
                             "table": "movimientos", "id": _rid,
                             "desc": f"{r['tipo']} · {fmt_gs(r['monto'])} · {r['fecha']}"
@@ -796,7 +849,7 @@ with menu[0]:
                     if _cd and _cd["table"] == "movimientos" and _cd["id"] == _rid:
                         st.warning(f"¿Eliminar: **{_cd['desc']}**?")
                         b1, b2 = st.columns(2)
-                        if b1.button("✅ Confirmar", key=f"ok_mov_{_rid}", use_container_width=True):
+                        if b1.button(f"{ICO_CHECK} Confirmar", key=f"ok_mov_{_rid}", use_container_width=True):
                             try:
                                 cur.execute("DELETE FROM movimientos WHERE id = %s", (_rid,))
                                 conn.commit()
@@ -804,7 +857,7 @@ with menu[0]:
                                 st.rerun()
                             except Exception as _de:
                                 conn.rollback(); st.error(f"Error: {_de}")
-                        if b2.button("❌ Cancelar", key=f"cancel_mov_{_rid}", use_container_width=True):
+                        if b2.button(f"{ICO_CROSS} Cancelar", key=f"cancel_mov_{_rid}", use_container_width=True):
                             st.session_state._confirm_del = None
                             st.rerun()
     finally:
@@ -814,7 +867,7 @@ with menu[0]:
 # PESTAÑA 2: PRÉSTAMOS P2P (REFACTORIZADA + DASHBOARD)
 # -----------------------------------------------------
 with menu[1]:
-    st.header("🤝 Préstamos P2P — Motor Financiero PY")
+    st.header(f"{ICO_HANDSHAKE} Préstamos P2P — Motor Financiero PY")
     st.caption("Cálculos con precisión Decimal · Sistema Francés · Redondeo a Gs. entero · IVA 10% informativo")
 
     conn, cur = get_cursor()
@@ -838,15 +891,15 @@ with menu[1]:
         balance    = por_cobrar - por_pagar
 
         k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("💚 Por Cobrar",  fmt_gs(por_cobrar))
-        k2.metric("❤️ Por Pagar",   fmt_gs(por_pagar))
-        k3.metric("✅ Ya Cobrado",  fmt_gs(cobrado))
+        k1.metric(f"{ICO_GREEN_HRT} Por Cobrar",  fmt_gs(por_cobrar))
+        k2.metric(f"{ICO_RED_HRT} Por Pagar",    fmt_gs(por_pagar))
+        k3.metric(f"{ICO_CHECK} Ya Cobrado",     fmt_gs(cobrado))
         k4.metric(
-            "⚖️ Balance Neto", fmt_gs(balance),
+            f"{ICO_BALANCE} Balance Neto", fmt_gs(balance),
             delta="Acreedor neto" if balance >= 0 else "Deudor neto",
             delta_color="normal" if balance >= 0 else "inverse",
         )
-        k5.metric("📬 Pendientes", f"{n_pend}")
+        k5.metric(f"{ICO_MAILBOX} Pendientes", f"{n_pend}")
 
         st.divider()
 
@@ -857,13 +910,13 @@ with menu[1]:
         usuarios_dict = {u['username']: u['id'] for u in cur.fetchall()}
 
         if not usuarios_dict:
-            st.info("📭 Aún no hay otros usuarios registrados para operar. Invita a alguien a crear cuenta.")
+            st.info(f"{ICO_EMPTY_BOX} Aún no hay otros usuarios registrados para operar. Invita a alguien a crear cuenta.")
         else:
             col_f, col_s = st.columns(2)
 
             # ---------------- NUEVA PROPUESTA ----------------
             with col_f:
-                st.subheader("📝 Nueva Propuesta")
+                st.subheader(f"{ICO_NOTEPAD} Nueva Propuesta")
 
                 # Inputs FUERA del form → permiten simulación en vivo
                 socio = st.selectbox("Elegir Socio", list(usuarios_dict.keys()))
@@ -892,7 +945,7 @@ with menu[1]:
                 if mon > 0 and plazo > 0:
                     sim = calcular_prestamo(mon, inte, plazo, sistema)
                     if sim:
-                        st.markdown("##### 🧮 Simulación")
+                        st.markdown(f"##### {ICO_ABACUS} Simulación")
                         m1, m2, m3 = st.columns(3)
                         m1.metric("Cuota mensual", fmt_gs(sim["cuota_promedio"]))
                         m2.metric("Total a pagar", fmt_gs(sim["total_pagar"]))
@@ -902,12 +955,12 @@ with menu[1]:
                         m5.metric("CET anual", f"{sim['cet_anual']}%", help="Costo Efectivo Total (BCP)")
                         m6.metric("IVA s/intereses", fmt_gs(sim["iva_intereses"]))
 
-                        with st.expander("📅 Ver cronograma de amortización"):
+                        with st.expander(f"{ICO_CALENDAR} Ver cronograma de amortización"):
                             df_cron = pd.DataFrame(sim["cronograma"])
                             st.dataframe(df_cron, use_container_width=True, hide_index=True)
 
                 # ---------- ENVIAR ----------
-                if st.button("📤 Enviar Solicitud", use_container_width=True, type="primary"):
+                if st.button(f"{ICO_SEND} Enviar Solicitud", use_container_width=True, type="primary"):
                     # Validaciones
                     if mon <= 0:
                         st.error("El monto debe ser mayor a 0.")
@@ -936,7 +989,7 @@ with menu[1]:
                                 int(sim["cuota_promedio"]), int(sim["total_pagar"])
                             ))
                             conn.commit()
-                            st.success("✅ Propuesta enviada con cronograma calculado.")
+                            st.success(f"{ICO_CHECK} Propuesta enviada con cronograma calculado.")
                             st.rerun()
                         except Exception as e:
                             conn.rollback()
@@ -944,7 +997,7 @@ with menu[1]:
 
             # ---------------- BANDEJA DE ENTRADA ----------------
             with col_s:
-                st.subheader("📥 Bandeja de Entrada")
+                st.subheader(f"{ICO_INBOX} Bandeja de Entrada")
                 # JOIN corregido: usamos CASE para traer al OTRO usuario sin duplicar filas.
                 cur.execute("""
                     SELECT
@@ -988,7 +1041,7 @@ with menu[1]:
                                 st.write(f"**Vencimiento:** {p_rec['fecha_vencimiento']}")
 
                             _cols = st.columns(3) if is_admin else st.columns(2)
-                            if _cols[0].button("✅ Aprobar", key=f"a_{p_rec['id']}", use_container_width=True):
+                            if _cols[0].button(f"{ICO_CHECK} Aprobar", key=f"a_{p_rec['id']}", use_container_width=True):
                                 try:
                                     cur.execute(
                                         "UPDATE prestamos SET estado = 'aprobado' WHERE id = %s",
@@ -999,7 +1052,7 @@ with menu[1]:
                                 except Exception as e:
                                     conn.rollback()
                                     st.error(f"Error: {e}")
-                            if _cols[1].button("❌ Rechazar", key=f"r_{p_rec['id']}", use_container_width=True):
+                            if _cols[1].button(f"{ICO_CROSS} Rechazar", key=f"r_{p_rec['id']}", use_container_width=True):
                                 try:
                                     cur.execute(
                                         "UPDATE prestamos SET estado = 'rechazado' WHERE id = %s",
@@ -1011,7 +1064,7 @@ with menu[1]:
                                     conn.rollback()
                                     st.error(f"Error: {e}")
                             if is_admin:
-                                if _cols[2].button("🗑️ Eliminar", key=f"del_pend_{p_rec['id']}", use_container_width=True):
+                                if _cols[2].button(f"{ICO_TRASH} Eliminar", key=f"del_pend_{p_rec['id']}", use_container_width=True):
                                     st.session_state._confirm_del = {
                                         "table": "prestamos", "id": p_rec["id"],
                                         "desc": f"Préstamo pendiente #{p_rec['id']} · {fmt_gs(p_rec['monto'])}"
@@ -1021,7 +1074,7 @@ with menu[1]:
                                 if _cd and _cd["table"] == "prestamos" and _cd["id"] == p_rec["id"]:
                                     st.warning(f"¿Eliminar: **{_cd['desc']}**?")
                                     _b1, _b2 = st.columns(2)
-                                    if _b1.button("✅ Confirmar", key=f"ok_pend_{p_rec['id']}", use_container_width=True):
+                                    if _b1.button(f"{ICO_CHECK} Confirmar", key=f"ok_pend_{p_rec['id']}", use_container_width=True):
                                         try:
                                             cur.execute("DELETE FROM prestamos WHERE id = %s", (p_rec["id"],))
                                             conn.commit()
@@ -1029,13 +1082,13 @@ with menu[1]:
                                             st.rerun()
                                         except Exception as _de:
                                             conn.rollback(); st.error(f"Error: {_de}")
-                                    if _b2.button("❌ Cancelar", key=f"cancel_pend_{p_rec['id']}", use_container_width=True):
+                                    if _b2.button(f"{ICO_CROSS} Cancelar", key=f"cancel_pend_{p_rec['id']}", use_container_width=True):
                                         st.session_state._confirm_del = None
                                         st.rerun()
 
         # ---------------- PRÉSTAMOS ACTIVOS ----------------
         st.divider()
-        st.subheader("📈 Préstamos Activos")
+        st.subheader(f"{ICO_CHART_UP} Préstamos Activos")
         cur.execute("""
             SELECT
                 p.id,
@@ -1075,7 +1128,7 @@ with menu[1]:
                     ib2.metric("Total a pagar", fmt_gs(row['total_pagar'] or 0))
 
                     btn_cols = st.columns(3) if is_admin else st.columns(1)
-                    if btn_cols[0].button("💰 Registrar Pago", key=f"pago_{row['id']}", use_container_width=True, type="primary"):
+                    if btn_cols[0].button(f"{ICO_MONEY} Registrar Pago", key=f"pago_{row['id']}", use_container_width=True, type="primary"):
                         try:
                             cur.execute("UPDATE prestamos SET estado = 'pagado' WHERE id = %s", (row['id'],))
                             conn.commit()
@@ -1085,7 +1138,7 @@ with menu[1]:
                             conn.rollback()
                             st.error(f"Error: {e}")
                     if is_admin:
-                        if btn_cols[1].button("🗑️ Eliminar", key=f"del_act_{row['id']}", use_container_width=True):
+                        if btn_cols[1].button(f"{ICO_TRASH} Eliminar", key=f"del_act_{row['id']}", use_container_width=True):
                             st.session_state._confirm_del = {
                                 "table": "prestamos", "id": row["id"],
                                 "desc": f"Préstamo activo #{row['id']} · {fmt_gs(row['monto'])}"
@@ -1095,7 +1148,7 @@ with menu[1]:
                         if _cd and _cd["table"] == "prestamos" and _cd["id"] == row["id"]:
                             st.warning(f"¿Eliminar: **{_cd['desc']}**?")
                             _b1, _b2 = st.columns(2)
-                            if _b1.button("✅ Confirmar", key=f"ok_act_{row['id']}", use_container_width=True):
+                            if _b1.button(f"{ICO_CHECK} Confirmar", key=f"ok_act_{row['id']}", use_container_width=True):
                                 try:
                                     cur.execute("DELETE FROM prestamos WHERE id = %s", (row["id"],))
                                     conn.commit()
@@ -1103,13 +1156,13 @@ with menu[1]:
                                     st.rerun()
                                 except Exception as _de:
                                     conn.rollback(); st.error(f"Error: {_de}")
-                            if _b2.button("❌ Cancelar", key=f"cancel_act_{row['id']}", use_container_width=True):
+                            if _b2.button(f"{ICO_CROSS} Cancelar", key=f"cancel_act_{row['id']}", use_container_width=True):
                                 st.session_state._confirm_del = None
                                 st.rerun()
 
         # ---------------- PRÉSTAMOS PAGADOS (historial) ----------------
         st.divider()
-        st.subheader("✅ Historial de Cobros")
+        st.subheader(f"{ICO_CHECK} Historial de Cobros")
         cur.execute("""
             SELECT
                 p.id,
@@ -1134,7 +1187,7 @@ with menu[1]:
                 with st.expander(f"{lab} — {fmt_gs(pag['total_pagar'] or pag['monto'])}"):
                     st.write(f"**Capital:** {fmt_gs(pag['monto'])} | **Total pagado:** {fmt_gs(pag['total_pagar'] or pag['monto'])}")
                     if is_admin:
-                        if st.button("🗑️ Eliminar registro", key=f"del_pag_{pag['id']}", use_container_width=True):
+                        if st.button(f"{ICO_TRASH} Eliminar registro", key=f"del_pag_{pag['id']}", use_container_width=True):
                             st.session_state._confirm_del = {
                                 "table": "prestamos", "id": pag["id"],
                                 "desc": f"Historial #{pag['id']} · {fmt_gs(pag['total_pagar'] or pag['monto'])}"
@@ -1144,7 +1197,7 @@ with menu[1]:
                         if _cd and _cd["table"] == "prestamos" and _cd["id"] == pag["id"]:
                             st.warning(f"¿Eliminar: **{_cd['desc']}**?")
                             _b1, _b2 = st.columns(2)
-                            if _b1.button("✅ Confirmar", key=f"ok_pag_{pag['id']}", use_container_width=True):
+                            if _b1.button(f"{ICO_CHECK} Confirmar", key=f"ok_pag_{pag['id']}", use_container_width=True):
                                 try:
                                     cur.execute("DELETE FROM prestamos WHERE id = %s", (pag["id"],))
                                     conn.commit()
@@ -1152,7 +1205,7 @@ with menu[1]:
                                     st.rerun()
                                 except Exception as _de:
                                     conn.rollback(); st.error(f"Error: {_de}")
-                            if _b2.button("❌ Cancelar", key=f"cancel_pag_{pag['id']}", use_container_width=True):
+                            if _b2.button(f"{ICO_CROSS} Cancelar", key=f"cancel_pag_{pag['id']}", use_container_width=True):
                                 st.session_state._confirm_del = None
                                 st.rerun()
 
@@ -1163,7 +1216,7 @@ with menu[1]:
 # PESTAÑA 3: INVERSIONES (GGR + PROYECCIÓN 12 MESES)
 # -----------------------------------------------------
 with menu[2]:
-    st.header("📈 Seguimiento de Inversiones")
+    st.header(f"{ICO_CHART_UP} Seguimiento de Inversiones")
     st.caption("GGR (Gross Growth Rate) mensual equivalente a partir del ROI anual · Proyección de valor a 12 meses")
 
     conn, cur = get_cursor()
@@ -1183,15 +1236,15 @@ with menu[2]:
         n_activos = t['n'] or 0
 
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("💼 Capital Invertido", fmt_gs(capital_tot))
-        k2.metric("📈 Ganancia Anual Est.", fmt_gs(gan_anual))
-        k3.metric("🎯 Valor Proyectado 12m", fmt_gs(valor_12m))
-        k4.metric("🧾 Activos", f"{n_activos}")
+        k1.metric(f"{ICO_BRIEFCASE} Capital Invertido", fmt_gs(capital_tot))
+        k2.metric(f"{ICO_CHART_UP} Ganancia Anual Est.", fmt_gs(gan_anual))
+        k3.metric(f"{ICO_TARGET} Valor Proyectado 12m", fmt_gs(valor_12m))
+        k4.metric(f"{ICO_RECEIPT} Activos", f"{n_activos}")
 
         st.divider()
 
         # -------- FORMULARIO REGISTRO --------
-        with st.expander("➕ Registrar Nuevo Activo", expanded=(n_activos == 0)):
+        with st.expander(f"{ICO_PLUS} Registrar Nuevo Activo", expanded=(n_activos == 0)):
             with st.form("inv_form"):
                 c1, c2, c3 = st.columns(3)
                 with c1:
@@ -1200,7 +1253,7 @@ with menu[2]:
                     m_inv = st.number_input("Capital Invertido (Gs.)", min_value=0, step=100000)
                 with c3:
                     roi_inv = st.number_input("ROI Anual Estimado (%)", min_value=0.0, step=0.5, value=10.0)
-                if st.form_submit_button("💾 Registrar", use_container_width=True):
+                if st.form_submit_button(f"{ICO_SAVE} Registrar", use_container_width=True):
                     if not n_inv or m_inv <= 0:
                         st.warning("Completa nombre y monto > 0.")
                     else:
@@ -1226,7 +1279,7 @@ with menu[2]:
         if not invs:
             st.info("Aún no registraste inversiones. Añadí un activo para ver GGR y proyecciones.")
         else:
-            st.subheader("📊 Portfolio con GGR y Proyección 12 meses")
+            st.subheader(f"{ICO_CHART_BAR} Portfolio con GGR y Proyección 12 meses")
             filas = []
             for r in invs:
                 capital = Decimal(str(r['monto']))
@@ -1262,7 +1315,7 @@ with menu[2]:
                     _rc = st.columns([3, 3, 2, 2, 3, 3, 2, 1])
                     for _c, _k in zip(_rc[:-1], ["Activo","Capital","ROI Anual","GGR Mensual","Valor a 12 m.","Ganancia","Fecha"]):
                         _c.write(f[_k])
-                    if _rc[-1].button("🗑️", key=f"del_inv_{_rid}", use_container_width=False):
+                    if _rc[-1].button(chr(0x1F5D1), key=f"del_inv_{_rid}", use_container_width=False):
                         st.session_state._confirm_del = {
                             "table": "inversiones", "id": _rid,
                             "desc": f"{f['Activo']} · {f['Capital']}"
@@ -1272,7 +1325,7 @@ with menu[2]:
                     if _cd and _cd["table"] == "inversiones" and _cd["id"] == _rid:
                         st.warning(f"¿Eliminar: **{_cd['desc']}**?")
                         _b1, _b2 = st.columns(2)
-                        if _b1.button("✅ Confirmar", key=f"ok_inv_{_rid}", use_container_width=True):
+                        if _b1.button(f"{ICO_CHECK} Confirmar", key=f"ok_inv_{_rid}", use_container_width=True):
                             try:
                                 cur.execute("DELETE FROM inversiones WHERE id = %s", (_rid,))
                                 conn.commit()
@@ -1280,12 +1333,12 @@ with menu[2]:
                                 st.rerun()
                             except Exception as _de:
                                 conn.rollback(); st.error(f"Error: {_de}")
-                        if _b2.button("❌ Cancelar", key=f"cancel_inv_{_rid}", use_container_width=True):
+                        if _b2.button(f"{ICO_CROSS} Cancelar", key=f"cancel_inv_{_rid}", use_container_width=True):
                             st.session_state._confirm_del = None
                             st.rerun()
 
             # -------- GRÁFICO PROYECCIÓN MENSUAL ACUMULADA --------
-            st.subheader("📉 Proyección de valor (12 meses)")
+            st.subheader(f"{ICO_CHART_DOWN} Proyección de valor (12 meses)")
             meses = list(range(0, 13))
             fig = go.Figure()
             for r in invs:
@@ -1318,7 +1371,7 @@ with menu[2]:
 # PESTAÑA 4: AHORROS (DASHBOARD + APORTE PERSONALIZADO)
 # -----------------------------------------------------
 with menu[3]:
-    st.header("🎯 Metas de Ahorro")
+    st.header(f"{ICO_TARGET} Metas de Ahorro")
 
     conn, cur = get_cursor()
     try:
@@ -1337,10 +1390,10 @@ with menu[3]:
         pct_global = min(pct_global, 1.0)
 
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("💰 Ahorrado Total", fmt_gs(ahorrado))
-        k2.metric("🏁 Objetivo Total", fmt_gs(objetivo))
-        k3.metric("📉 Falta", fmt_gs(faltante))
-        k4.metric("📊 Progreso Global", f"{pct_global*100:.1f}%")
+        k1.metric(f"{ICO_MONEY} Ahorrado Total", fmt_gs(ahorrado))
+        k2.metric(f"{ICO_FLAG} Objetivo Total", fmt_gs(objetivo))
+        k3.metric(f"{ICO_CHART_DOWN} Falta", fmt_gs(faltante))
+        k4.metric(f"{ICO_CHART_BAR} Progreso Global", f"{pct_global*100:.1f}%")
 
         st.markdown("**Progreso general**")
         st.progress(pct_global)
@@ -1348,7 +1401,7 @@ with menu[3]:
         st.divider()
 
         # -------- CREAR NUEVA META --------
-        with st.expander("🎯 Crear Nueva Meta"):
+        with st.expander(f"{ICO_TARGET} Crear Nueva Meta"):
             with st.form("ah_form"):
                 c1, c2 = st.columns(2)
                 with c1:
@@ -1378,7 +1431,7 @@ with menu[3]:
         metas = cur.fetchall()
 
         if not metas:
-            st.info("🗒️ Todavía no creaste metas de ahorro. Empezá creando la primera arriba.")
+            st.info(f"{ICO_NOTEPAD2} Todavía no creaste metas de ahorro. Empezá creando la primera arriba.")
         else:
             for m in metas:
                 objetivo_m = float(m['objetivo']) if m['objetivo'] else 0
@@ -1387,7 +1440,7 @@ with menu[3]:
                 porcentaje_c = min(porcentaje, 1.0)
                 completo = porcentaje >= 1.0
 
-                st.markdown(f"### {'🏆 ' if completo else '🎯 '}{m['meta_nombre']}")
+                st.markdown(f"### {ICO_TROPHY + ' ' if completo else ICO_TARGET + ' '}{m['meta_nombre']}")
                 c_inf, c_bar = st.columns([1, 3])
                 with c_inf:
                     st.metric("Progreso", f"{porcentaje*100:.1f}%")
@@ -1422,7 +1475,7 @@ with menu[3]:
                             )
                         with cc2:
                             st.write(""); st.write("")
-                            enviar = st.form_submit_button("💵 Aportar", use_container_width=True)
+                            enviar = st.form_submit_button(f"{ICO_CASH} Aportar", use_container_width=True)
                         if enviar:
                             if monto_custom <= 0:
                                 st.warning("Ingresá un monto > 0.")
@@ -1441,7 +1494,7 @@ with menu[3]:
 
                 # ---- Controles de administrador ----
                 if is_admin:
-                    with st.expander("🔧 Herramientas de administrador", expanded=False):
+                    with st.expander(f"{ICO_WRENCH} Herramientas de administrador", expanded=False):
                         adm_c1, adm_c2 = st.columns(2)
 
                         # -- Corregir saldo --
@@ -1453,7 +1506,7 @@ with menu[3]:
                                     value=0, step=10000,
                                     key=f"adj_{m['id']}"
                                 )
-                                if st.form_submit_button("🔧 Aplicar ajuste", use_container_width=True):
+                                if st.form_submit_button(f"{ICO_WRENCH} Aplicar ajuste", use_container_width=True):
                                     if ajuste == 0:
                                         st.warning("Ingresá un valor distinto de 0.")
                                     else:
@@ -1472,7 +1525,7 @@ with menu[3]:
                         with adm_c2:
                             st.caption("**Eliminar meta completa**")
                             st.write(f"Meta: **{m['meta_nombre']}** · saldo {fmt_gs(actual_m)}")
-                            if st.button("🗑️ Eliminar meta", key=f"del_meta_{m['id']}", use_container_width=True):
+                            if st.button(f"{ICO_TRASH} Eliminar meta", key=f"del_meta_{m['id']}", use_container_width=True):
                                 st.session_state._confirm_del = {
                                     "table": "ahorros", "id": m["id"],
                                     "desc": f"{m['meta_nombre']} · {fmt_gs(actual_m)}"
@@ -1482,7 +1535,7 @@ with menu[3]:
                             if _cd and _cd["table"] == "ahorros" and _cd["id"] == m["id"]:
                                 st.warning(f"¿Eliminar: **{_cd['desc']}**?")
                                 _b1, _b2 = st.columns(2)
-                                if _b1.button("✅ Confirmar", key=f"ok_meta_{m['id']}", use_container_width=True):
+                                if _b1.button(f"{ICO_CHECK} Confirmar", key=f"ok_meta_{m['id']}", use_container_width=True):
                                     try:
                                         cur.execute("DELETE FROM ahorros WHERE id = %s", (m["id"],))
                                         conn.commit()
@@ -1490,7 +1543,7 @@ with menu[3]:
                                         st.rerun()
                                     except Exception as _de:
                                         conn.rollback(); st.error(f"Error: {_de}")
-                                if _b2.button("❌ Cancelar", key=f"cancel_meta_{m['id']}", use_container_width=True):
+                                if _b2.button(f"{ICO_CROSS} Cancelar", key=f"cancel_meta_{m['id']}", use_container_width=True):
                                     st.session_state._confirm_del = None
                                     st.rerun()
 
@@ -1503,7 +1556,7 @@ with menu[3]:
 # -----------------------------------------------------
 if is_admin:
     with menu[4]:
-        st.header("👥 Gestión de Usuarios")
+        st.header(f"{ICO_USERS} Gestión de Usuarios")
         st.caption("Panel de administración · Sólo los administradores pueden crear, editar o eliminar usuarios.")
 
         conn, cur = get_cursor()
@@ -1518,28 +1571,28 @@ if is_admin:
             """)
             stats = cur.fetchone() or {}
             k1, k2, k3 = st.columns(3)
-            k1.metric("👥 Total Usuarios", stats.get('total', 0) or 0)
-            k2.metric("🛡️ Administradores", stats.get('admins', 0) or 0)
-            k3.metric("👤 Usuarios Estándar", stats.get('users', 0) or 0)
+            k1.metric(f"{ICO_USERS} Total Usuarios", stats.get('total', 0) or 0)
+            k2.metric(f"{ICO_SHIELD} Administradores", stats.get('admins', 0) or 0)
+            k3.metric(f"{ICO_USER} Usuarios Estándar", stats.get('users', 0) or 0)
 
             st.divider()
 
             # -------- CREAR NUEVO USUARIO --------
-            with st.expander("➕ Crear Nuevo Usuario", expanded=False):
+            with st.expander(f"{ICO_PLUS} Crear Nuevo Usuario", expanded=False):
                 with st.form("create_user_form", clear_on_submit=True):
                     cu1, cu2 = st.columns(2)
                     with cu1:
                         new_username = st.text_input("Nombre de usuario", key="adm_new_u")
                         new_role = st.selectbox(
                             "Rol", ["user", "admin"],
-                            format_func=lambda r: "🛡️ Administrador" if r == "admin" else "👤 Usuario",
+                            format_func=lambda r: f"{ICO_SHIELD} Administrador" if r == "admin" else f"{ICO_USER} Usuario",
                             key="adm_new_r"
                         )
                     with cu2:
                         new_password = st.text_input("Contraseña", type="password", key="adm_new_p")
                         new_password2 = st.text_input("Confirmar contraseña", type="password", key="adm_new_p2")
 
-                    submitted = st.form_submit_button("✅ Crear Usuario", use_container_width=True)
+                    submitted = st.form_submit_button(f"{ICO_CHECK} Crear Usuario", use_container_width=True)
                     if submitted:
                         if not new_username or not new_password:
                             st.warning("Completá usuario y contraseña.")
@@ -1555,17 +1608,17 @@ if is_admin:
                                     (new_username.strip(), hashed, new_role)
                                 )
                                 conn.commit()
-                                st.success(f"✅ Usuario '{new_username}' creado como {new_role}.")
+                                st.success(f"{ICO_CHECK} Usuario '{new_username}' creado como {new_role}.")
                                 st.rerun()
                             except psycopg2.errors.UniqueViolation:
                                 conn.rollback()
-                                st.error("❌ Ese nombre de usuario ya existe.")
+                                st.error(f"{ICO_CROSS} Ese nombre de usuario ya existe.")
                             except Exception as e:
                                 conn.rollback()
                                 st.error(f"Error: {e}")
 
             # -------- LISTA DE USUARIOS --------
-            st.subheader("📋 Lista de Usuarios")
+            st.subheader(f"{ICO_CLIPBOARD} Lista de Usuarios")
             cur.execute("""
                 SELECT id, username, COALESCE(role,'user') AS role
                 FROM usuarios
@@ -1575,7 +1628,7 @@ if is_admin:
 
             for usr in users:
                 es_self = usr['id'] == st.session_state.user_id
-                icono = "🛡️" if usr['role'] == 'admin' else "👤"
+                icono = ICO_SHIELD if usr['role'] == 'admin' else ICO_USER
                 etiqueta = f"{icono} **{usr['username']}** — `{usr['role']}`"
                 if es_self:
                     etiqueta += " *(vos)*"
@@ -1593,9 +1646,9 @@ if is_admin:
                             ["user", "admin"],
                             index=(0 if usr['role'] != 'admin' else 1),
                             key=f"rol_{usr['id']}",
-                            format_func=lambda r: "🛡️ Administrador" if r == "admin" else "👤 Usuario",
+                            format_func=lambda r: f"{ICO_SHIELD} Administrador" if r == "admin" else f"{ICO_USER} Usuario",
                         )
-                        if st.button("🔄 Aplicar rol", key=f"saverol_{usr['id']}", use_container_width=True):
+                        if st.button(f"{ICO_ROTATE} Aplicar rol", key=f"saverol_{usr['id']}", use_container_width=True):
                             if es_self and nuevo_rol != 'admin':
                                 st.error("No podés quitarte el rol de admin a vos mismo.")
                             elif nuevo_rol == usr['role']:
@@ -1634,7 +1687,7 @@ if is_admin:
                                 "Nueva contraseña", type="password",
                                 key=f"np_{usr['id']}"
                             )
-                            if st.form_submit_button("🔑 Resetear", use_container_width=True):
+                            if st.form_submit_button(f"{ICO_KEY} Resetear", use_container_width=True):
                                 if not new_pwd or len(new_pwd) < 6:
                                     st.warning("Mínimo 6 caracteres.")
                                 else:
@@ -1658,7 +1711,7 @@ if is_admin:
                                 f"Confirmar eliminar a {usr['username']}",
                                 key=f"delchk_{usr['id']}"
                             )
-                            if st.button("🗑️ Eliminar", key=f"del_{usr['id']}", use_container_width=True):
+                            if st.button(f"{ICO_TRASH} Eliminar", key=f"del_{usr['id']}", use_container_width=True):
                                 if not confirmar:
                                     st.warning("Marcá la casilla de confirmación primero.")
                                 else:
@@ -1695,7 +1748,7 @@ if is_admin:
                                         st.error(f"Error: {e}")
         # -------- GESTION DE PRESTAMOS (ADMIN) --------
             st.divider()
-            st.subheader("🤝 Gestión Global de Préstamos")
+            st.subheader(f"{ICO_HANDSHAKE} Gestión Global de Préstamos")
             st.caption("Vista de todos los préstamos del sistema · Solo administradores")
 
             estados_filtro = st.multiselect(
@@ -1725,7 +1778,7 @@ if is_admin:
                     st.info("No hay préstamos con esos estados.")
                 else:
                     for pr in todos:
-                        color_badge = {"aprobado": "🟢", "pendiente": "🟡", "pagado": "✅", "rechazado": "🔴"}.get(pr['estado'], "⚪")
+                        color_badge = {"aprobado": ICO_GREEN_CIR, "pendiente": ICO_YELLOW_CIR, "pagado": ICO_CHECK, "rechazado": ICO_RED_CIR}.get(pr['estado'], ICO_WHITE_CIR)
                         with st.expander(f"{color_badge} #{pr['id']} — {pr['prestamista']} → {pr['prestatario']} | {fmt_gs(pr['monto'])} | {pr['estado'].upper()}"):
                             gc1, gc2, gc3 = st.columns(3)
                             gc1.write(f"**Tasa:** {pr['interes']}% | **Plazo:** {pr['plazo_meses']} m | **Sistema:** {pr['sistema']}")
@@ -1734,26 +1787,26 @@ if is_admin:
 
                             gb1, gb2, gb3 = st.columns(3)
                             if pr['estado'] == 'aprobado':
-                                if gb1.button("💰 Marcar Pagado", key=f"adm_pago_{pr['id']}", use_container_width=True, type="primary"):
+                                if gb1.button(f"{ICO_MONEY} Marcar Pagado", key=f"adm_pago_{pr['id']}", use_container_width=True, type="primary"):
                                     try:
                                         cur.execute("UPDATE prestamos SET estado='pagado' WHERE id=%s", (pr['id'],))
                                         conn.commit(); st.rerun()
                                     except Exception as e:
                                         conn.rollback(); st.error(f"Error: {e}")
                             if pr['estado'] == 'pendiente':
-                                if gb1.button("✅ Aprobar", key=f"adm_apr_{pr['id']}", use_container_width=True):
+                                if gb1.button(f"{ICO_CHECK} Aprobar", key=f"adm_apr_{pr['id']}", use_container_width=True):
                                     try:
                                         cur.execute("UPDATE prestamos SET estado='aprobado' WHERE id=%s", (pr['id'],))
                                         conn.commit(); st.rerun()
                                     except Exception as e:
                                         conn.rollback(); st.error(f"Error: {e}")
-                                if gb2.button("❌ Rechazar", key=f"adm_rech_{pr['id']}", use_container_width=True):
+                                if gb2.button(f"{ICO_CROSS} Rechazar", key=f"adm_rech_{pr['id']}", use_container_width=True):
                                     try:
                                         cur.execute("UPDATE prestamos SET estado='rechazado' WHERE id=%s", (pr['id'],))
                                         conn.commit(); st.rerun()
                                     except Exception as e:
                                         conn.rollback(); st.error(f"Error: {e}")
-                            if gb3.button("🗑️ Eliminar", key=f"adm_del_{pr['id']}", use_container_width=True):
+                            if gb3.button(f"{ICO_TRASH} Eliminar", key=f"adm_del_{pr['id']}", use_container_width=True):
                                 try:
                                     cur.execute("DELETE FROM prestamos WHERE id=%s", (pr['id'],))
                                     conn.commit(); st.rerun()
@@ -1764,13 +1817,13 @@ if is_admin:
 
         # -------- GASTOS ADMINISTRATIVOS --------
             st.divider()
-            st.subheader("🏢 Gastos Administrativos")
+            st.subheader(f"{ICO_BUILDING} Gastos Administrativos")
             st.caption("Registra costos operativos del negocio. Se descuentan del Balance Neto global.")
 
             CATS_GASTO = ["Papelería/Impresiones", "Comisiones Bancarias",
                           "Movilidad", "Honorarios", "Servicios TI", "Otros"]
 
-            with st.expander("➕ Registrar Gasto", expanded=False):
+            with st.expander(f"{ICO_PLUS} Registrar Gasto", expanded=False):
                 with st.form("form_gasto", clear_on_submit=True):
                     fg1, fg2, fg3 = st.columns(3)
                     with fg1:
@@ -1781,7 +1834,7 @@ if is_admin:
                     with fg3:
                         g_desc = st.text_input("Descripción", key="g_desc")
                         st.write(""); st.write("")
-                    if st.form_submit_button("💾 Guardar Gasto", use_container_width=True):
+                    if st.form_submit_button(f"{ICO_SAVE} Guardar Gasto", use_container_width=True):
                         if g_monto <= 0:
                             st.warning("El monto debe ser mayor a 0.")
                         else:
@@ -1812,7 +1865,7 @@ if is_admin:
                 cur.execute("SELECT categoria, SUM(monto) AS total FROM gastos GROUP BY categoria ORDER BY total DESC")
                 cats_g = cur.fetchall()
                 if cats_g:
-                    st.subheader("📊 Gastos por categoría")
+                    st.subheader(f"{ICO_CHART_BAR} Gastos por categoría")
                     df_cats_g = pd.DataFrame([dict(r) for r in cats_g])
                     df_cats_g["total"] = df_cats_g["total"].astype(float)
                     fig_g = px.bar(
@@ -1832,7 +1885,7 @@ if is_admin:
                     st.plotly_chart(fig_g, use_container_width=True)
 
                 # Botones de borrado por gasto
-                st.subheader("🗑️ Eliminar gastos")
+                st.subheader(f"{ICO_TRASH} Eliminar gastos")
                 for g in ultimos_g:
                     col_label, col_btn = st.columns([4, 1])
                     col_label.write(f"{g['fecha']} | {g['categoria']} | {fmt_gs(g['monto'])} | {g['descripcion'] or '—'}")
