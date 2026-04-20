@@ -526,41 +526,68 @@ _cookie_mgr = stx.CookieManager(key="fpro_cm_v1")
 # HELPERS DE SESIÓN PERSISTENTE
 # =========================================================
 def _crear_token(user_id: int) -> str:
+    """Genera token, lo persiste en DB y devuelve el valor. Loguea cada paso."""
     token   = str(uuid.uuid4())
     expires = datetime.now() + timedelta(days=7)
+    print(f"[TOKEN] Creando token para user_id={user_id} | expira={expires.isoformat()}")
     conn, cur = get_cursor()
-    if cur:
-        try:
-            cur.execute(
-                "DELETE FROM session_tokens WHERE user_id = %s OR expires_at < NOW()",
-                (user_id,)
-            )
-            cur.execute(
-                "INSERT INTO session_tokens (token, user_id, expires_at) VALUES (%s,%s,%s)",
-                (token, user_id, expires)
-            )
-            conn.commit()
-        finally:
-            cur.close()
+    if not cur:
+        print("[TOKEN] ERROR: sin cursor — token NO guardado en DB")
+        return token
+    try:
+        cur.execute(
+            "DELETE FROM session_tokens WHERE user_id = %s OR expires_at < NOW()",
+            (user_id,)
+        )
+        cur.execute(
+            "INSERT INTO session_tokens (token, user_id, expires_at) VALUES (%s,%s,%s)",
+            (token, user_id, expires)
+        )
+        conn.commit()
+        print(f"[TOKEN] Token guardado en DB: {token[:8]}...")
+    except Exception as _te:
+        print(f"[TOKEN] ERROR al guardar en DB: {_te}")
+        try: conn.rollback()
+        except: pass
+    finally:
+        cur.close()
     return token
 
 def _validar_token(token: str) -> dict | None:
+    """Valida token contra DB con logs explícitos en cada rama."""
     if not token:
+        print("[VALIDAR] Token vacio — rechazado")
         return None
+    print(f"[VALIDAR] Consultando DB para token={token[:8]}...")
     conn, cur = get_cursor()
     if not cur:
+        print("[VALIDAR] ERROR: sin cursor de DB")
         return None
     try:
         cur.execute("""
-            SELECT u.id, u.username, COALESCE(u.role, 'user') AS role
-            FROM session_tokens st
-            JOIN usuarios u ON u.id = st.user_id
-            WHERE st.token = %s AND st.expires_at > NOW()
+            SELECT u.id, u.username, COALESCE(u.role, 'user') AS role,
+                   tok.expires_at
+            FROM   session_tokens tok
+            JOIN   usuarios u ON u.id = tok.user_id
+            WHERE  tok.token = %s
         """, (token,))
         row = cur.fetchone()
-        return dict(row) if row else None
+        if not row:
+            print("[VALIDAR] Token NO encontrado en DB")
+            return None
+        expires_at = row["expires_at"]
+        if expires_at < datetime.now():
+            print(f"[VALIDAR] Token EXPIRADO en {expires_at.isoformat()}")
+            return None
+        result = {"id": row["id"], "username": row["username"], "role": row["role"]}
+        print(f"[VALIDAR] OK — usuario='{result['username']}' expira={expires_at.isoformat()}")
+        return result
+    except Exception as _ve:
+        print(f"[VALIDAR] EXCEPCION: {_ve}")
+        return None
     finally:
-        cur.close()
+        try: cur.close()
+        except: pass
 
 def _revocar_token(token: str):
     if not token:
@@ -588,42 +615,46 @@ _LOCK_SCREEN = """
 """
 
 # =========================================================
-# 5. AUTENTICACION — cookie-first, guardia nativa del componente
+# 5. AUTENTICACION — cookie-first con diagnóstico completo
 # =========================================================
-# _cookie_mgr.cookies == None  →  React aun no comunico los valores al servidor
-# _cookie_mgr.cookies == {}    →  Componente listo, sin cookies en el navegador
-# _cookie_mgr.cookies == {...} →  Componente listo, con cookies disponibles
-#
-# Flujo F5:
-#   Render 1: cookies is None  → lock screen + sleep(0.5) + rerun
-#   Render 2: cookies is dict  → leer token → validar DB → login o dashboard
+# _cookie_mgr.cookies == None  →  React NO comunico valores todavia
+# _cookie_mgr.cookies == {}    →  Componente listo, sin cookies (1 reintento)
+# _cookie_mgr.cookies == {...} →  Componente listo, token disponible
 # =========================================================
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
+if "logged_in"      not in st.session_state: st.session_state.logged_in      = False
+if "_empty_retried" not in st.session_state: st.session_state._empty_retried = False
 
 _auth_slot = st.empty()
 
 if not st.session_state.logged_in:
 
-    # Guardia directa: si el componente aun no cargo, esperar
-    if _cookie_mgr.cookies is None:
-        print("[AUTH] Buscando sesion guardada...")
+    _raw_cookies = _cookie_mgr.cookies
+    print(f"[AUTH] cookies raw = {type(_raw_cookies).__name__} | valor = {_raw_cookies}")
+
+    # Ciclo 1: componente React aun no cargo
+    if _raw_cookies is None:
+        print("[AUTH] CookieManager no listo — esperando...")
         _auth_slot.markdown(_LOCK_SCREEN, unsafe_allow_html=True)
         time.sleep(0.5)
         st.rerun()
 
-    # Componente listo — leer token
+    # Ciclo 2 (primer intento): cookies cargaron pero estan vacias
+    # Puede ser race condition — dar 0.3s extra antes de rendirse
+    if _raw_cookies == {} and not st.session_state._empty_retried:
+        print("[AUTH] Cookies vacias — reintentando en 0.3s...")
+        st.session_state._empty_retried = True
+        _auth_slot.markdown(_LOCK_SCREEN, unsafe_allow_html=True)
+        time.sleep(0.3)
+        st.rerun()
+
+    # Componente confirmado listo — leer token
     _token = _cookie_mgr.get("session_pro_py")
-    _tok_log = (_token[:8] + "...") if _token else "ninguno"
-    print(f"[AUTH] Token detectado: {_tok_log}")
+    print(f"DEBUG: Cookie detectada: {_token}")
 
     if _token:
         _auth_slot.markdown(_LOCK_SCREEN, unsafe_allow_html=True)
-        try:
-            _user = _validar_token(_token)
-        except Exception as _e:
-            print(f"[AUTH] Error validando token: {_e}")
-            _user = None
+        _user = _validar_token(_token)
+        print(f"DEBUG: Resultado validacion DB: {_user}")
 
         if _user:
             print(f"[AUTH] Sesion valida — entrando como '{_user['username']}'")
@@ -632,15 +663,17 @@ if not st.session_state.logged_in:
             st.session_state.username          = _user["username"]
             st.session_state.role              = _user["role"]
             st.session_state["_session_token"] = _token
+            st.session_state._empty_retried    = False
             _auth_slot.empty()
             st.rerun()
         else:
-            print("[AUTH] Token invalido — borrando cookie")
+            print("[AUTH] Token invalido/expirado — borrando cookie")
             try: _cookie_mgr.delete("session_pro_py")
             except: pass
 
     # Sin sesion valida — mostrar formulario de login
-    print("[AUTH] Mostrando login")
+    st.session_state._empty_retried = False
+    print("[AUTH] Mostrando formulario de login")
     _auth_slot.empty()
     with _auth_slot.container():
         st.markdown("""
@@ -663,19 +696,24 @@ if not st.session_state.logged_in:
                         cur_l.execute("SELECT * FROM usuarios WHERE username = %s", (u,))
                         user = cur_l.fetchone()
                         if user and bcrypt.checkpw(p.encode(), user["password"].encode()):
+                            print(f"[LOGIN] Credenciales OK para '{u}' — guardando token en DB...")
+                            # 1. Guardar token en DB PRIMERO
+                            _tok = _crear_token(user["id"])
+                            # 2. Luego persistir sesion y cookie
                             st.session_state.logged_in = True
                             st.session_state.user_id   = user["id"]
                             st.session_state.username  = user["username"]
                             st.session_state.role      = (user["role"] if "role" in user.keys() else "user") or "user"
-                            _tok = _crear_token(user["id"])
                             st.session_state["_session_token"] = _tok
+                            st.session_state._empty_retried    = False
                             try:
                                 _cookie_mgr.set(
                                     "session_pro_py", _tok,
                                     expires_at=datetime.now() + timedelta(days=7)
                                 )
-                            except Exception:
-                                pass
+                                print(f"[LOGIN] Cookie escrita: {_tok[:8]}...")
+                            except Exception as _ce:
+                                print(f"[LOGIN] WARN: cookie no escrita: {_ce}")
                             st.rerun()
                         else:
                             st.error("❌ Credenciales incorrectas")
@@ -713,7 +751,7 @@ if st.sidebar.button("Cerrar Sesión"):
     if _t:
         _revocar_token(_t)
     _cookie_mgr.delete("session_pro_py")
-    for k in ["logged_in", "user_id", "username", "role", "_session_token"]:
+    for k in ["logged_in", "user_id", "username", "role", "_session_token", "_empty_retried"]:
         st.session_state.pop(k, None)
     st.rerun()
 
