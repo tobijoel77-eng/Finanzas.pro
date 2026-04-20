@@ -834,7 +834,7 @@ with menu[0]:
                 st.divider()
                 for r in ultimos:
                     _rid = r["id"]
-                    rc1, rc2, rc3, rc4, rc5 = st.columns([2, 2, 3, 3, 1])
+                    rc1, rc2, rc3, rc4, rc5 = st.columns([2, 2, 3, 3, 1], vertical_alignment="center")
                     rc1.write(str(r["fecha"]))
                     rc2.write(r["tipo"])
                     rc3.write(r["categoria"])
