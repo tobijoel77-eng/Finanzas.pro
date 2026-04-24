@@ -365,17 +365,22 @@ def _init_tablas(conn, cur):
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS pagos_programados (
-                id           SERIAL PRIMARY KEY,
-                user_id      INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
-                nombre       TEXT NOT NULL,
-                monto        INTEGER NOT NULL,
-                fecha_venc   DATE NOT NULL,
-                dividir      BOOLEAN NOT NULL DEFAULT FALSE,
-                pagado       BOOLEAN NOT NULL DEFAULT FALSE,
+                id            SERIAL PRIMARY KEY,
+                user_id       INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+                nombre        TEXT NOT NULL,
+                monto         INTEGER NOT NULL,
+                fecha_venc    DATE NOT NULL,
+                dividir       BOOLEAN NOT NULL DEFAULT FALSE,
+                pagado        BOOLEAN NOT NULL DEFAULT FALSE,
                 deuda_hermano INTEGER DEFAULT NULL,
-                created_at   TIMESTAMP NOT NULL DEFAULT NOW()
+                socio_id      INTEGER REFERENCES usuarios(id) ON DELETE SET NULL DEFAULT NULL,
+                created_at    TIMESTAMP NOT NULL DEFAULT NOW()
             )
         """)
+        cur.execute(
+            "ALTER TABLE pagos_programados "
+            "ADD COLUMN IF NOT EXISTS socio_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL"
+        )
 
         cur.execute("SELECT 1 FROM usuarios WHERE username = 'admin'")
         if not cur.fetchone():
@@ -901,14 +906,29 @@ with menu[0]:
                 dividir       BOOLEAN NOT NULL DEFAULT FALSE,
                 pagado        BOOLEAN NOT NULL DEFAULT FALSE,
                 deuda_hermano INTEGER DEFAULT NULL,
+                socio_id      INTEGER REFERENCES usuarios(id) ON DELETE SET NULL DEFAULT NULL,
                 created_at    TIMESTAMP NOT NULL DEFAULT NOW()
             )
         """)
+        cur2.execute(
+            "ALTER TABLE pagos_programados "
+            "ADD COLUMN IF NOT EXISTS socio_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL"
+        )
         conn2.commit()
+
+        # Cargar otros usuarios para el selector de socio
+        cur2.execute(
+            "SELECT id, username FROM usuarios WHERE id != %s ORDER BY username",
+            (st.session_state.user_id,)
+        )
+        _otros = cur2.fetchall()
+        _socio_labels = ["— Sin dividir —"] + [u["username"] for u in _otros]
+        _socio_ids    = [None]              + [u["id"]       for u in _otros]
+        _socios_map   = {u["id"]: u["username"] for u in _otros}
 
         # Cargar pagos del usuario
         cur2.execute("""
-            SELECT id, nombre, monto, fecha_venc, dividir, pagado, deuda_hermano
+            SELECT id, nombre, monto, fecha_venc, dividir, pagado, deuda_hermano, socio_id
             FROM pagos_programados
             WHERE user_id = %s
             ORDER BY pagado ASC, fecha_venc ASC
@@ -925,8 +945,13 @@ with menu[0]:
                 pp_monto = st.number_input("Monto (Gs.)", min_value=0, step=1000, key=f"pp_monto_{_pn}")
                 pp_fecha = st.date_input("Fecha de vencimiento", value=hoy, key=f"pp_fecha_{_pn}")
             with pcol3:
-                pp_dividir = st.checkbox(f"{ICO_SPLIT} Dividir 50/50 con tu hermano", key=f"pp_div_{_pn}")
-                st.write("")
+                _pp_soc_sel  = st.selectbox(
+                    f"{ICO_SPLIT} Dividir 50/50 con...",
+                    options=_socio_labels,
+                    key=f"pp_soc_{_pn}"
+                )
+                _pp_socio_id = _socio_ids[_socio_labels.index(_pp_soc_sel)]
+                pp_dividir   = _pp_socio_id is not None
                 st.write("")
                 if st.button(f"{ICO_SAVE} Agregar Pago", use_container_width=True, key=f"pp_btn_{_pn}"):
                     if not pp_nombre.strip():
@@ -937,9 +962,10 @@ with menu[0]:
                         try:
                             cur2.execute(
                                 """INSERT INTO pagos_programados
-                                   (user_id, nombre, monto, fecha_venc, dividir)
-                                   VALUES (%s,%s,%s,%s,%s)""",
-                                (st.session_state.user_id, pp_nombre.strip(), pp_monto, pp_fecha, pp_dividir)
+                                   (user_id, nombre, monto, fecha_venc, dividir, socio_id)
+                                   VALUES (%s,%s,%s,%s,%s,%s)""",
+                                (st.session_state.user_id, pp_nombre.strip(),
+                                 pp_monto, pp_fecha, pp_dividir, _pp_socio_id)
                             )
                             conn2.commit()
                             st.session_state._pp_n += 1
@@ -951,13 +977,14 @@ with menu[0]:
         if not pagos:
             st.info("No hay pagos programados. Agregá uno con el botón de arriba.")
         else:
-            # Notificaciones de deudas pendientes del hermano
+            # Notificaciones de deudas pendientes del socio
             deudas = [p for p in pagos if p["deuda_hermano"] and p["pagado"]]
             if deudas:
-                st.markdown("### " + ICO_WARN + " Deudas pendientes de tu hermano")
+                st.markdown("### " + ICO_WARN + " Deudas pendientes")
                 for d in deudas:
+                    _socio_nombre = _socios_map.get(d["socio_id"], "tu socio")
                     st.warning(
-                        f"{ICO_USERS} **{d['nombre']}** — Tu hermano te debe **{fmt_gs(d['deuda_hermano'])}**"
+                        f"{ICO_USERS} **{d['nombre']}** — {_socio_nombre} te debe **{fmt_gs(d['deuda_hermano'])}**"
                     )
 
             # Separar pendientes y completados
@@ -971,14 +998,22 @@ with menu[0]:
                     vencido_hoy = (p["fecha_venc"] == hoy)
                     borde_color = "#FF4B4B" if vencido_hoy else "#1E3A5F"
 
+                    _tag_vence = (
+                        f"&nbsp;&nbsp;<span style='color:#FF4B4B;font-weight:bold'>"
+                        f"{ICO_WARN} VENCE HOY</span>"
+                    ) if vencido_hoy else ""
+                    _nombre_socio_p = _socios_map.get(p["socio_id"], "socio")
+                    _tag_split = (
+                        f"&nbsp;&nbsp;<span style='color:#F0A500'>"
+                        f"{ICO_SPLIT} 50/50 con {_nombre_socio_p}</span>"
+                    ) if p["dividir"] else ""
                     st.markdown(
-                        f"""<div style="border:2px solid {borde_color};border-radius:8px;
-                            padding:10px 14px;margin-bottom:8px;background:#0E1117">
-                        <b>{p['nombre']}</b> &nbsp;·&nbsp; {fmt_gs(p['monto'])}
-                        &nbsp;·&nbsp; Vence: {p['fecha_venc']}
-                        {"&nbsp;&nbsp;<span style='color:#FF4B4B;font-weight:bold'>" + ICO_WARN + " VENCE HOY</span>" if vencido_hoy else ""}
-                        {"&nbsp;&nbsp;<span style='color:#F0A500'>" + ICO_SPLIT + " Dividido 50/50</span>" if p['dividir'] else ""}
-                        </div>""",
+                        f"<div style='border:2px solid {borde_color};border-radius:8px;"
+                        f"padding:10px 14px;margin-bottom:8px;background:#0E1117'>"
+                        f"<b>{p['nombre']}</b> &nbsp;·&nbsp; {fmt_gs(p['monto'])}"
+                        f"&nbsp;·&nbsp; Vence: {p['fecha_venc']}"
+                        f"{_tag_vence}{_tag_split}"
+                        f"</div>",
                         unsafe_allow_html=True
                     )
 
@@ -1016,14 +1051,20 @@ with menu[0]:
                 st.markdown(f"#### {ICO_CHECK} Completados")
                 for p in completados:
                     _pid = p["id"]
+                    _nombre_socio_c = _socios_map.get(p["socio_id"], "socio")
+                    _tag_deuda = (
+                        f"&nbsp;&nbsp;<span style='color:#F0A500'>"
+                        f"{ICO_USERS} {_nombre_socio_c} debe: "
+                        f"<b>{fmt_gs(p['deuda_hermano'])}</b></span>"
+                    ) if p["deuda_hermano"] else ""
                     st.markdown(
-                        f"""<div style="border:2px solid #1A6B3C;border-radius:8px;
-                            padding:10px 14px;margin-bottom:8px;background:#0A1F13;opacity:0.85">
-                        <span style="color:#4CAF50"><b>{ICO_CHECK} {p['nombre']}</b></span>
-                        &nbsp;·&nbsp; {fmt_gs(p['monto'])}
-                        &nbsp;·&nbsp; Venció: {p['fecha_venc']}
-                        {f"&nbsp;&nbsp;<span style='color:#F0A500'>{ICO_USERS} Hermano debe: <b>{fmt_gs(p['deuda_hermano'])}</b></span>" if p['deuda_hermano'] else ""}
-                        </div>""",
+                        f"<div style='border:2px solid #1A6B3C;border-radius:8px;"
+                        f"padding:10px 14px;margin-bottom:8px;background:#0A1F13;opacity:0.85'>"
+                        f"<span style='color:#4CAF50'><b>{ICO_CHECK} {p['nombre']}</b></span>"
+                        f"&nbsp;·&nbsp; {fmt_gs(p['monto'])}"
+                        f"&nbsp;·&nbsp; Venció: {p['fecha_venc']}"
+                        f"{_tag_deuda}"
+                        f"</div>",
                         unsafe_allow_html=True
                     )
                     if st.button(f"{ICO_ROTATE} Reabrir", key=f"pp_reopen_{_pid}", use_container_width=False):
