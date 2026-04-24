@@ -1030,11 +1030,17 @@ with menu[0]:
                     ):
                         monto_dec = Decimal(str(p["monto"]))
                         deuda = int(gs(monto_dec / Decimal("2"))) if p["dividir"] else None
+                        egreso_monto = deuda if p["dividir"] else int(p["monto"])
                         _upe_saved = False
                         try:
                             cur2.execute(
                                 "UPDATE pagos_programados SET pagado=TRUE, deuda_hermano=%s WHERE id=%s",
                                 (deuda, _pid)
+                            )
+                            cur2.execute(
+                                "INSERT INTO movimientos (user_id, tipo, monto, descripcion, fecha, categoria) VALUES (%s,%s,%s,%s,%s,%s)",
+                                (st.session_state.user_id, "Egreso", egreso_monto,
+                                 f"Pago {p['nombre']}", date.today(), "Servicios")
                             )
                             conn2.commit()
                             _upe_saved = True
