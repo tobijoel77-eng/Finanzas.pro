@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 from decimal import Decimal, ROUND_HALF_UP, getcontext
+import base64
 
 # ---------- Icon constants — no literal emojis in source ----------
 ICO_LOCK       = "\U0001F510"        # 🔐
@@ -343,6 +344,7 @@ def _init_tablas(conn, cur):
                 actual DECIMAL DEFAULT 0
             )
         """)
+        cur.execute("ALTER TABLE ahorros ADD COLUMN IF NOT EXISTS imagen TEXT DEFAULT NULL")
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS gastos (
@@ -1648,24 +1650,33 @@ with menu[3]:
                     n_meta = st.text_input("¿Para qué estás ahorrando?")
                 with c2:
                     obj_meta = st.number_input("Objetivo Final (Gs.)", min_value=0, step=100000)
+                img_file = st.file_uploader(
+                    "Imagen motivacional (opcional — png, jpg, jpeg)",
+                    type=["png", "jpg", "jpeg"],
+                    help="Se guarda embebida. Tamaño recomendado: menos de 2 MB."
+                )
                 if st.form_submit_button("Crear Meta", use_container_width=True):
                     if not n_meta or obj_meta <= 0:
                         st.warning("Completa nombre y objetivo > 0.")
                     else:
+                        img_b64 = base64.b64encode(img_file.getvalue()).decode("utf-8") if img_file else None
+                        _ah_saved = False
                         try:
                             cur.execute(
-                                "INSERT INTO ahorros (user_id, meta_nombre, objetivo) VALUES (%s, %s, %s)",
-                                (st.session_state.user_id, n_meta, obj_meta)
+                                "INSERT INTO ahorros (user_id, meta_nombre, objetivo, imagen) VALUES (%s, %s, %s, %s)",
+                                (st.session_state.user_id, n_meta, obj_meta, img_b64)
                             )
                             conn.commit()
-                            st.rerun()
+                            _ah_saved = True
                         except Exception as e:
                             conn.rollback()
                             st.error(f"Error: {e}")
+                        if _ah_saved:
+                            st.rerun()
 
         # -------- LISTA DE METAS --------
         cur.execute(
-            "SELECT id, meta_nombre, objetivo, actual FROM ahorros WHERE user_id = %s ORDER BY id",
+            "SELECT id, meta_nombre, objetivo, actual, imagen FROM ahorros WHERE user_id = %s ORDER BY id",
             (st.session_state.user_id,)
         )
         metas = cur.fetchall()
@@ -1684,6 +1695,11 @@ with menu[3]:
                 c_inf, c_bar = st.columns([1, 3])
                 with c_inf:
                     st.metric("Progreso", f"{porcentaje*100:.1f}%")
+                    if m.get("imagen"):
+                        try:
+                            st.image(base64.b64decode(m["imagen"]), width=160)
+                        except Exception:
+                            pass
                 with c_bar:
                     st.write(f"**{fmt_gs(actual_m)}** / {fmt_gs(objetivo_m)}  ·  falta **{fmt_gs(max(objetivo_m-actual_m,0))}**")
                     st.progress(porcentaje_c)
