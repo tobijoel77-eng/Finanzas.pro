@@ -1617,6 +1617,9 @@ with menu[3]:
 
     conn, cur = get_cursor()
     try:
+        cur.execute("ALTER TABLE ahorros ADD COLUMN IF NOT EXISTS imagen TEXT DEFAULT NULL")
+        conn.commit()
+
         # -------- KPIs globales --------
         cur.execute("""
             SELECT COALESCE(SUM(actual),0) AS ahorrado,
