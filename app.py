@@ -1769,16 +1769,20 @@ with menu[3]:
                                     if ajuste == 0:
                                         st.warning("Ingresá un valor distinto de 0.")
                                     else:
+                                        _adj_ok = False
                                         try:
                                             cur.execute(
                                                 "UPDATE ahorros SET actual = GREATEST(0, actual + %s) WHERE id = %s",
                                                 (ajuste, m['id'])
                                             )
                                             conn.commit()
-                                            st.rerun()
+                                            _adj_ok = True
                                         except Exception as _ae:
                                             conn.rollback()
                                             st.error(f"Error: {_ae}")
+                                        if _adj_ok:
+                                            st.cache_data.clear()
+                                            st.rerun()
 
                         # -- Eliminar meta --
                         with adm_c2:
@@ -1795,20 +1799,32 @@ with menu[3]:
                                 st.warning(f"¿Eliminar: **{_cd['desc']}**?")
                                 _b1, _b2 = st.columns(2)
                                 if _b1.button(f"{ICO_CHECK} Confirmar", key=f"ok_meta_{m['id']}", use_container_width=True):
+                                    _del_ok = False
                                     try:
                                         cur.execute("DELETE FROM ahorros WHERE id = %s", (m["id"],))
                                         conn.commit()
-                                        st.session_state._confirm_del = None
-                                        st.rerun()
+                                        _del_ok = True
                                     except Exception as _de:
-                                        conn.rollback(); st.error(f"Error: {_de}")
+                                        conn.rollback()
+                                        st.error(f"Error al eliminar (id={m['id']}): {_de}")
+                                    if _del_ok:
+                                        st.session_state._confirm_del = None
+                                        st.cache_data.clear()
+                                        try: cur.close()
+                                        except: pass
+                                        try: conn.close()
+                                        except: pass
+                                        st.rerun()
                                 if _b2.button(f"{ICO_CROSS} Cancelar", key=f"cancel_meta_{m['id']}", use_container_width=True):
                                     st.session_state._confirm_del = None
                                     st.rerun()
 
                 st.divider()
     finally:
-        cur.close()
+        try: cur.close()
+        except: pass
+        try: conn.close()
+        except: pass
 
 # -----------------------------------------------------
 # PESTAÑA 5: USUARIOS (SÓLO ADMIN)
