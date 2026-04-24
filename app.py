@@ -891,6 +891,21 @@ with menu[0]:
 
     conn2, cur2 = get_cursor()
     try:
+        cur2.execute("""
+            CREATE TABLE IF NOT EXISTS pagos_programados (
+                id            SERIAL PRIMARY KEY,
+                user_id       INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+                nombre        TEXT NOT NULL,
+                monto         INTEGER NOT NULL,
+                fecha_venc    DATE NOT NULL,
+                dividir       BOOLEAN NOT NULL DEFAULT FALSE,
+                pagado        BOOLEAN NOT NULL DEFAULT FALSE,
+                deuda_hermano INTEGER DEFAULT NULL,
+                created_at    TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        """)
+        conn2.commit()
+
         # Cargar pagos del usuario
         cur2.execute("""
             SELECT id, nombre, monto, fecha_venc, dividir, pagado, deuda_hermano
