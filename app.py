@@ -959,20 +959,25 @@ with menu[0]:
                     elif pp_monto <= 0:
                         st.warning("El monto debe ser mayor a 0.")
                     else:
+                        _pp_saved = False
                         try:
+                            st.toast("Guardando pago...")
                             cur2.execute(
                                 """INSERT INTO pagos_programados
                                    (user_id, nombre, monto, fecha_venc, dividir, socio_id)
                                    VALUES (%s,%s,%s,%s,%s,%s)""",
                                 (st.session_state.user_id, pp_nombre.strip(),
-                                 pp_monto, pp_fecha, pp_dividir, _pp_socio_id)
+                                 int(pp_monto), pp_fecha, pp_dividir, _pp_socio_id)
                             )
                             conn2.commit()
-                            st.session_state._pp_n += 1
-                            st.rerun()
+                            _pp_saved = True
                         except Exception as _pe:
                             conn2.rollback()
-                            st.error(f"Error: {_pe}")
+                            st.error(f"Error al guardar el pago: {_pe}")
+                        if _pp_saved:
+                            st.session_state._pp_n += 1
+                            st.success("¡Pago guardado correctamente!")
+                            st.rerun()
 
         if not pagos:
             st.info("No hay pagos programados. Agregá uno con el botón de arriba.")
@@ -1025,27 +1030,33 @@ with menu[0]:
                     ):
                         monto_dec = Decimal(str(p["monto"]))
                         deuda = int(gs(monto_dec / Decimal("2"))) if p["dividir"] else None
+                        _upe_saved = False
                         try:
                             cur2.execute(
                                 "UPDATE pagos_programados SET pagado=TRUE, deuda_hermano=%s WHERE id=%s",
                                 (deuda, _pid)
                             )
                             conn2.commit()
-                            st.rerun()
+                            _upe_saved = True
                         except Exception as _upe:
                             conn2.rollback(); st.error(f"Error: {_upe}")
+                        if _upe_saved:
+                            st.rerun()
 
                     if pcols[1].button(
                         f"{ICO_TRASH} Eliminar",
                         key=f"pp_del_{_pid}",
                         use_container_width=True
                     ):
+                        _dpe_saved = False
                         try:
                             cur2.execute("DELETE FROM pagos_programados WHERE id=%s", (_pid,))
                             conn2.commit()
-                            st.rerun()
+                            _dpe_saved = True
                         except Exception as _dpe:
                             conn2.rollback(); st.error(f"Error: {_dpe}")
+                        if _dpe_saved:
+                            st.rerun()
 
             if completados:
                 st.markdown(f"#### {ICO_CHECK} Completados")
@@ -1068,17 +1079,23 @@ with menu[0]:
                         unsafe_allow_html=True
                     )
                     if st.button(f"{ICO_ROTATE} Reabrir", key=f"pp_reopen_{_pid}", use_container_width=False):
+                        _rpe_saved = False
                         try:
                             cur2.execute(
                                 "UPDATE pagos_programados SET pagado=FALSE, deuda_hermano=NULL WHERE id=%s",
                                 (_pid,)
                             )
                             conn2.commit()
-                            st.rerun()
+                            _rpe_saved = True
                         except Exception as _rpe:
                             conn2.rollback(); st.error(f"Error: {_rpe}")
+                        if _rpe_saved:
+                            st.rerun()
     finally:
-        cur2.close()
+        try: cur2.close()
+        except: pass
+        try: conn2.close()
+        except: pass
 
 # -----------------------------------------------------
 # PESTAÑA 2: PRÉSTAMOS P2P (REFACTORIZADA + DASHBOARD)
