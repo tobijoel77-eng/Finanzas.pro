@@ -59,6 +59,8 @@ ICO_WHITE_CIR  = "\u26AA"            # ⚪
 ICO_GREEN_HRT  = "\U0001F49A"        # 💚
 ICO_RED_HRT    = "\u2764\uFE0F"      # ❤️
 ICO_EMPTY_BOX  = "\U0001F4ED"        # 📭
+ICO_BELL       = "\U0001F514"        # 🔔
+ICO_SPLIT      = "\u2702\uFE0F"      # ✂️
 
 # Precisión alta para cálculos financieros (evita errores por float binario)
 getcontext().prec = 28
@@ -360,6 +362,20 @@ def _init_tablas(conn, cur):
             )
         """)
         cur.execute("DELETE FROM session_tokens WHERE expires_at < NOW()")
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pagos_programados (
+                id           SERIAL PRIMARY KEY,
+                user_id      INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+                nombre       TEXT NOT NULL,
+                monto        INTEGER NOT NULL,
+                fecha_venc   DATE NOT NULL,
+                dividir      BOOLEAN NOT NULL DEFAULT FALSE,
+                pagado       BOOLEAN NOT NULL DEFAULT FALSE,
+                deuda_hermano INTEGER DEFAULT NULL,
+                created_at   TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        """)
 
         cur.execute("SELECT 1 FROM usuarios WHERE username = 'admin'")
         if not cur.fetchone():
@@ -862,6 +878,151 @@ with menu[0]:
                             st.rerun()
     finally:
         cur.close()
+
+    # -------- PAGOS PROGRAMADOS --------
+    st.divider()
+    st.subheader(f"{ICO_BELL} Pagos Programados")
+
+    # Inicializar contadores de formulario
+    if "_pp_n" not in st.session_state:
+        st.session_state._pp_n = 0
+
+    hoy = date.today()
+
+    conn2, cur2 = get_cursor()
+    try:
+        # Cargar pagos del usuario
+        cur2.execute("""
+            SELECT id, nombre, monto, fecha_venc, dividir, pagado, deuda_hermano
+            FROM pagos_programados
+            WHERE user_id = %s
+            ORDER BY pagado ASC, fecha_venc ASC
+        """, (st.session_state.user_id,))
+        pagos = cur2.fetchall()
+
+        # Formulario para agregar nuevo pago
+        with st.expander(f"{ICO_PLUS} Agregar Pago Programado", expanded=False):
+            _pn = st.session_state._pp_n
+            pcol1, pcol2, pcol3 = st.columns(3)
+            with pcol1:
+                pp_nombre = st.text_input("Nombre del servicio", placeholder="Ej: Netflix", key=f"pp_nom_{_pn}")
+            with pcol2:
+                pp_monto = st.number_input("Monto (Gs.)", min_value=0, step=1000, key=f"pp_monto_{_pn}")
+                pp_fecha = st.date_input("Fecha de vencimiento", value=hoy, key=f"pp_fecha_{_pn}")
+            with pcol3:
+                pp_dividir = st.checkbox(f"{ICO_SPLIT} Dividir 50/50 con tu hermano", key=f"pp_div_{_pn}")
+                st.write("")
+                st.write("")
+                if st.button(f"{ICO_SAVE} Agregar Pago", use_container_width=True, key=f"pp_btn_{_pn}"):
+                    if not pp_nombre.strip():
+                        st.warning("Ingresá el nombre del servicio.")
+                    elif pp_monto <= 0:
+                        st.warning("El monto debe ser mayor a 0.")
+                    else:
+                        try:
+                            cur2.execute(
+                                """INSERT INTO pagos_programados
+                                   (user_id, nombre, monto, fecha_venc, dividir)
+                                   VALUES (%s,%s,%s,%s,%s)""",
+                                (st.session_state.user_id, pp_nombre.strip(), pp_monto, pp_fecha, pp_dividir)
+                            )
+                            conn2.commit()
+                            st.session_state._pp_n += 1
+                            st.rerun()
+                        except Exception as _pe:
+                            conn2.rollback()
+                            st.error(f"Error: {_pe}")
+
+        if not pagos:
+            st.info("No hay pagos programados. Agregá uno con el botón de arriba.")
+        else:
+            # Notificaciones de deudas pendientes del hermano
+            deudas = [p for p in pagos if p["deuda_hermano"] and p["pagado"]]
+            if deudas:
+                st.markdown("### " + ICO_WARN + " Deudas pendientes de tu hermano")
+                for d in deudas:
+                    st.warning(
+                        f"{ICO_USERS} **{d['nombre']}** — Tu hermano te debe **{fmt_gs(d['deuda_hermano'])}**"
+                    )
+
+            # Separar pendientes y completados
+            pendientes   = [p for p in pagos if not p["pagado"]]
+            completados  = [p for p in pagos if p["pagado"]]
+
+            if pendientes:
+                st.markdown(f"#### {ICO_CALENDAR} Pendientes")
+                for p in pendientes:
+                    _pid = p["id"]
+                    vencido_hoy = (p["fecha_venc"] == hoy)
+                    borde_color = "#FF4B4B" if vencido_hoy else "#1E3A5F"
+
+                    st.markdown(
+                        f"""<div style="border:2px solid {borde_color};border-radius:8px;
+                            padding:10px 14px;margin-bottom:8px;background:#0E1117">
+                        <b>{p['nombre']}</b> &nbsp;·&nbsp; {fmt_gs(p['monto'])}
+                        &nbsp;·&nbsp; Vence: {p['fecha_venc']}
+                        {"&nbsp;&nbsp;<span style='color:#FF4B4B;font-weight:bold'>" + ICO_WARN + " VENCE HOY</span>" if vencido_hoy else ""}
+                        {"&nbsp;&nbsp;<span style='color:#F0A500'>" + ICO_SPLIT + " Dividido 50/50</span>" if p['dividir'] else ""}
+                        </div>""",
+                        unsafe_allow_html=True
+                    )
+
+                    pcols = st.columns([2, 2, 1])
+                    if pcols[0].button(
+                        f"{ICO_CHECK} Marcar como Pagado",
+                        key=f"pp_pay_{_pid}",
+                        use_container_width=True
+                    ):
+                        monto_dec = Decimal(str(p["monto"]))
+                        deuda = int(gs(monto_dec / Decimal("2"))) if p["dividir"] else None
+                        try:
+                            cur2.execute(
+                                "UPDATE pagos_programados SET pagado=TRUE, deuda_hermano=%s WHERE id=%s",
+                                (deuda, _pid)
+                            )
+                            conn2.commit()
+                            st.rerun()
+                        except Exception as _upe:
+                            conn2.rollback(); st.error(f"Error: {_upe}")
+
+                    if pcols[1].button(
+                        f"{ICO_TRASH} Eliminar",
+                        key=f"pp_del_{_pid}",
+                        use_container_width=True
+                    ):
+                        try:
+                            cur2.execute("DELETE FROM pagos_programados WHERE id=%s", (_pid,))
+                            conn2.commit()
+                            st.rerun()
+                        except Exception as _dpe:
+                            conn2.rollback(); st.error(f"Error: {_dpe}")
+
+            if completados:
+                st.markdown(f"#### {ICO_CHECK} Completados")
+                for p in completados:
+                    _pid = p["id"]
+                    st.markdown(
+                        f"""<div style="border:2px solid #1A6B3C;border-radius:8px;
+                            padding:10px 14px;margin-bottom:8px;background:#0A1F13;opacity:0.85">
+                        <span style="color:#4CAF50"><b>{ICO_CHECK} {p['nombre']}</b></span>
+                        &nbsp;·&nbsp; {fmt_gs(p['monto'])}
+                        &nbsp;·&nbsp; Venció: {p['fecha_venc']}
+                        {f"&nbsp;&nbsp;<span style='color:#F0A500'>{ICO_USERS} Hermano debe: <b>{fmt_gs(p['deuda_hermano'])}</b></span>" if p['deuda_hermano'] else ""}
+                        </div>""",
+                        unsafe_allow_html=True
+                    )
+                    if st.button(f"{ICO_ROTATE} Reabrir", key=f"pp_reopen_{_pid}", use_container_width=False):
+                        try:
+                            cur2.execute(
+                                "UPDATE pagos_programados SET pagado=FALSE, deuda_hermano=NULL WHERE id=%s",
+                                (_pid,)
+                            )
+                            conn2.commit()
+                            st.rerun()
+                        except Exception as _rpe:
+                            conn2.rollback(); st.error(f"Error: {_rpe}")
+    finally:
+        cur2.close()
 
 # -----------------------------------------------------
 # PESTAÑA 2: PRÉSTAMOS P2P (REFACTORIZADA + DASHBOARD)
