@@ -1694,47 +1694,47 @@ with menu[3]:
                 porcentaje_c = min(porcentaje, 1.0)
                 completo = porcentaje >= 1.0
 
-                st.markdown(f"### {ICO_TROPHY + ' ' if completo else ICO_TARGET + ' '}{m['meta_nombre']}")
-                c_inf, c_bar = st.columns([1, 3])
-                with c_inf:
-                    st.metric("Progreso", f"{porcentaje*100:.1f}%")
+                st.divider()
+                col_left, col_right = st.columns([2.5, 1])
+
+                # ---- Columna izquierda: hero image + progreso ----
+                with col_left:
+                    icono = ICO_TROPHY if completo else ICO_TARGET
+                    st.markdown(f"### {icono} {m['meta_nombre']} — Progreso: {porcentaje*100:.1f}%")
                     if m.get("imagen"):
                         try:
-                            st.image(base64.b64decode(m["imagen"]), width=160)
+                            st.image(base64.b64decode(m["imagen"]), use_container_width=True)
                         except Exception:
                             pass
-                with c_bar:
-                    st.write(f"**{fmt_gs(actual_m)}** / {fmt_gs(objetivo_m)}  ·  falta **{fmt_gs(max(objetivo_m-actual_m,0))}**")
                     st.progress(porcentaje_c)
+                    st.caption(
+                        f"Ahorrado: **{fmt_gs(actual_m)}** · "
+                        f"Meta: **{fmt_gs(objetivo_m)}** · "
+                        f"Faltan: **{fmt_gs(max(objetivo_m - actual_m, 0))}**"
+                    )
 
-                # ---- Aportar ----
-                c_qa, c_qb, c_qc, c_custom = st.columns([1, 1, 1, 2])
-                aportes_rapidos = [50000, 100000, 500000]
-                for idx, apq in enumerate(aportes_rapidos):
-                    col_ref = [c_qa, c_qb, c_qc][idx]
-                    if col_ref.button(f"+ {fmt_gs(apq)}", key=f"q{apq}_{m['id']}", use_container_width=True):
-                        try:
-                            cur.execute(
-                                "UPDATE ahorros SET actual = actual + %s WHERE id = %s AND user_id = %s",
-                                (apq, m['id'], st.session_state.user_id)
-                            )
-                            conn.commit()
-                            st.rerun()
-                        except Exception as e:
-                            conn.rollback()
-                            st.error(f"Error: {e}")
+                # ---- Columna derecha: aportes rápidos + personalizado ----
+                with col_right:
+                    st.markdown("**Aportar**")
+                    for apq in [50000, 100000, 500000]:
+                        if st.button(f"+ {fmt_gs(apq)}", key=f"q{apq}_{m['id']}", use_container_width=True):
+                            try:
+                                cur.execute(
+                                    "UPDATE ahorros SET actual = actual + %s WHERE id = %s AND user_id = %s",
+                                    (apq, m['id'], st.session_state.user_id)
+                                )
+                                conn.commit()
+                                st.rerun()
+                            except Exception as e:
+                                conn.rollback()
+                                st.error(f"Error: {e}")
 
-                with c_custom:
                     with st.form(f"aporte_custom_{m['id']}", clear_on_submit=True):
-                        cc1, cc2 = st.columns([2, 1])
-                        with cc1:
-                            monto_custom = st.number_input(
-                                "Aporte personalizado (Gs.)",
-                                min_value=0, step=10000, key=f"mc_{m['id']}"
-                            )
-                        with cc2:
-                            st.write(""); st.write("")
-                            enviar = st.form_submit_button(f"{ICO_CASH} Aportar", use_container_width=True)
+                        monto_custom = st.number_input(
+                            "Personalizado (Gs.)",
+                            min_value=0, step=10000, key=f"mc_{m['id']}"
+                        )
+                        enviar = st.form_submit_button(f"{ICO_CASH} Aportar", use_container_width=True)
                         if enviar:
                             if monto_custom <= 0:
                                 st.warning("Ingresá un monto > 0.")
